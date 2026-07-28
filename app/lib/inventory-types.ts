@@ -1,6 +1,7 @@
 export type InventoryItem = {
   id: number;
   legacyReference: string;
+  supplierPartNumber: string;
   supplierCategoryCode: string;
   supplierName: string;
   description: string;

@@ -36,7 +36,8 @@ function date(value: string) {
 }
 
 function searchUrl(domain: string, item: InventoryItem) {
-  const query = `site:${domain} "${item.legacyReference}" "${item.description}"`;
+  const partNumber = item.supplierPartNumber || item.legacyReference;
+  const query = `site:${domain} "${partNumber}" "${item.description}"`;
   return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
 }
 
@@ -137,9 +138,9 @@ export default function MarketPricingWorkspace() {
     <section className="pricing-panel">
       <div className="section-heading"><div><p className="eyebrow">Catalogue</p><h2>Recherche de prix</h2></div><span className="results-count">{loading ? "Loading…" : `${items.length.toLocaleString()} parts`}</span></div>
       <div className="search-row"><label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search product no., description, supplier, location, or machine" aria-label="Search parts for pricing" /></label></div>
-      <div className="table-wrap"><table><thead><tr><th>No produit</th><th>Description</th><th>Prix coûtant</th><th>Dernière offre marché</th><th>Disponibilité</th><th></th></tr></thead><tbody>{items.slice(0, 100).map((item) => {
+      <div className="table-wrap"><table><thead><tr><th>No produit</th><th>No. pièce fournisseur</th><th>Description</th><th>Prix coûtant</th><th>Dernière offre marché</th><th>Disponibilité</th><th></th></tr></thead><tbody>{items.slice(0, 100).map((item) => {
         const offer = latestOfferByItem.get(item.id);
-        return <tr key={item.id}><td className="sku">{item.legacyReference}</td><td><strong>{item.description}</strong><small>{item.machineModel || "Machine model not recorded"}</small></td><td>{money(item.lastCost, "CAD")}</td><td>{offer ? <><a className="offer-link" href={offer.listingUrl} target="_blank" rel="noreferrer">{money(offer.price, offer.currency)} · {offer.sourceName}</a><small>{matchLabel(offer.matchStatus)} · checked {date(offer.checkedAt)}</small></> : <span className="muted">Not researched</span>}</td><td>{offer ? <span className={`availability ${offer.availability}`}>{availabilityLabel(offer.availability)}</span> : <span className="muted">—</span>}</td><td><button className="secondary research-button" onClick={() => openResearch(item)}>Research</button></td></tr>;
+        return <tr key={item.id}><td className="sku">{item.legacyReference}</td><td className="sku">{item.supplierPartNumber || <span className="muted">—</span>}</td><td><strong>{item.description}</strong><small>{item.machineModel || "Machine model not recorded"}</small></td><td>{money(item.lastCost, "CAD")}</td><td>{offer ? <><a className="offer-link" href={offer.listingUrl} target="_blank" rel="noreferrer">{money(offer.price, offer.currency)} · {offer.sourceName}</a><small>{matchLabel(offer.matchStatus)} · checked {date(offer.checkedAt)}</small></> : <span className="muted">Not researched</span>}</td><td>{offer ? <span className={`availability ${offer.availability}`}>{availabilityLabel(offer.availability)}</span> : <span className="muted">—</span>}</td><td><button className="secondary research-button" onClick={() => openResearch(item)}>Research</button></td></tr>;
       })}</tbody></table></div>
       {items.length > 100 && <p className="table-foot">Showing the first 100 matches. Refine the search to narrow the list.</p>}
     </section>

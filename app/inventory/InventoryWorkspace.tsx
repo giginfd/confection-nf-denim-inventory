@@ -30,6 +30,7 @@ type InvoiceDocument = { id: string; fileName: string; sizeBytes: number };
 
 const emptyForm: FormValues = {
   legacyReference: "",
+  supplierPartNumber: "",
   supplierCategoryCode: "",
   supplierName: "",
   description: "",
@@ -118,6 +119,7 @@ export default function InventoryWorkspace() {
     setSelected(item);
     setForm({
       legacyReference: item.legacyReference,
+      supplierPartNumber: item.supplierPartNumber,
       supplierCategoryCode: item.supplierCategoryCode,
       supplierName: item.supplierName,
       description: item.description,
@@ -263,20 +265,22 @@ export default function InventoryWorkspace() {
           <div className="search-row">
             <label className="search-box">
               <span>⌕</span>
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Rechercher : référence, pièce, fournisseur, emplacement ou machine" aria-label="Rechercher dans l'inventaire" />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Rechercher par no. produit, no. pièce fournisseur, description, machine ou emplacement" aria-label="Rechercher dans l'inventaire" />
             </label>
             <span className="results-count">{loading ? "Chargement…" : `${items.length.toLocaleString()} résultats`}</span>
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>No produit</th><th>Desc/Produit</th><th>Qte. en inventaire</th><th>Emplacement</th><th>Fournisseur</th><th>Prix coûtant</th></tr></thead>
+              <thead><tr><th>NO. PRODUIT</th><th>NO. PIÈCE FOURNISSEUR</th><th>DESCRIPTION</th><th>MACHINE / MODÈLE</th><th>EMPLA.</th><th>QTE</th><th>FOURNISSEUR</th><th>DERNIER COÛT</th></tr></thead>
               <tbody>
                 {displayedItems.map((item) => (
                   <tr key={item.id} onClick={() => openEdit(item)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && openEdit(item)}>
                     <td className="sku">{item.legacyReference}</td>
-                    <td><strong>{item.description}</strong><small>{item.machineModel || "Aucun modèle de machine"}</small></td>
-                    <td><span className={item.quantityOnHand === 0 ? "quantity zero" : "quantity"}>{item.quantityOnHand}</span></td>
+                    <td className="sku">{item.supplierPartNumber || <span className="muted">—</span>}</td>
+                    <td><strong>{item.description}</strong></td>
+                    <td>{item.machineModel || <span className="muted">—</span>}</td>
                     <td>{item.location || <span className="muted">—</span>}</td>
+                    <td><span className={item.quantityOnHand === 0 ? "quantity zero" : "quantity"}>{item.quantityOnHand}</span></td>
                     <td>{item.supplierName || <span className="muted">—</span>}</td>
                     <td>{money(item.lastCost)}</td>
                   </tr>
@@ -310,6 +314,7 @@ export default function InventoryWorkspace() {
             <form onSubmit={save}>
               <div className="form-grid">
                 <Field label="No produit / Product no." value={form.legacyReference} onChange={(value) => updateField("legacyReference", value)} required />
+                <Field label="No. pièce fournisseur / Supplier part no." value={form.supplierPartNumber} onChange={(value) => updateField("supplierPartNumber", value)} />
                 <Field label="Desc/Produit" value={form.description} onChange={(value) => updateField("description", value)} required />
                 <Field label="Qte. en inventaire" type="number" value={form.quantityOnHand} onChange={(value) => updateField("quantityOnHand", value)} />
                 <Field label="Emplacement / Location" value={form.location} onChange={(value) => updateField("location", value)} />

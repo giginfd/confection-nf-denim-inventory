@@ -4,6 +4,7 @@ import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 export const inventoryItems = sqliteTable("inventory_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   legacyReference: text("legacy_reference").notNull().unique(),
+  supplierPartNumber: text("supplier_part_number").notNull().default(""),
   supplierCategoryCode: text("supplier_category_code").notNull().default(""),
   supplierName: text("supplier_name").notNull().default(""),
   description: text("description").notNull(),
