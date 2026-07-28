@@ -85,6 +85,12 @@ or enforce explicit server-side membership or allowlist checks.
 Use SIWC for account pages, user-specific dashboards, saved records, and write
 actions tied to the current ChatGPT user. Leave public content anonymous.
 
+## Render deployment
+
+This inventory service needs the Render **Starter** plan or higher because it uses a persistent disk to retain the local inventory database and uploaded invoices. The repository includes `render.yaml` for a Blueprint deployment.
+
+Set `APP_PASSWORD` in Render to the password staff will use. Render generates `SESSION_SECRET` automatically. The service must have a disk mounted at `/var/data`; without it, inventory changes would be lost on restart. The Render start command is `bash scripts/start-render.sh`.
+
 ## Useful Commands
 
 - `npm run dev`: start local development

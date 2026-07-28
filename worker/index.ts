@@ -8,6 +8,8 @@ interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   INVOICES?: R2Bucket;
+  APP_PASSWORD?: string;
+  SESSION_SECRET?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -31,6 +33,16 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (env.APP_PASSWORD) {
+      if (url.pathname === "/auth/login" && request.method === "POST") return handlePasswordLogin(request, env);
+      if (url.pathname === "/auth/logout") return passwordRedirect(request, "", 0);
+      const publicAsset = url.pathname.startsWith("/assets/") || url.pathname.startsWith("/_vinext/") || url.pathname === "/favicon.svg";
+      if (!publicAsset && !(await hasValidPasswordSession(request, env))) {
+        if (url.pathname.startsWith("/api/")) return json({ error: "Password required." }, 401);
+        return passwordPage();
+      }
+    }
 
     if (url.pathname.startsWith("/api/")) {
       return runWithExecutionContext(ctx, () => handleApi(request, env, url));
@@ -99,6 +111,58 @@ function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8" } });
 }
 
+function passwordPage(message = "") {
+  return new Response(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Confection NF Denim — Accès</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f2eb;color:#192820;font-family:Arial,Helvetica,sans-serif;font-size:16px}.card{width:min(420px,calc(100% - 40px));padding:32px;border:1px solid #d9ddd4;border-radius:18px;background:#fffdf8;box-shadow:0 18px 55px #19282018}h1{margin:0 0 10px;font-size:28px;letter-spacing:-.04em}p{margin:0 0 24px;color:#66756d;line-height:1.5}label{display:block;margin-bottom:8px;font-weight:700}input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #b9c5ba;border-radius:8px;font:inherit}button{width:100%;margin-top:16px;padding:12px;border:0;border-radius:8px;background:#1d6b4d;color:#fff;font:inherit;font-weight:700;cursor:pointer}.error{margin:0 0 16px;color:#8a321b;font-weight:700}</style></head><body><main class="card"><h1>Confection NF Denim</h1><p>Entrez le mot de passe de l’inventaire pour continuer.</p>${message ? `<div class="error">${message}</div>` : ""}<form method="post" action="/auth/login"><label for="password">Mot de passe</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus><button type="submit">Ouvrir l’inventaire</button></form></main></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
+function cookieValue(request: Request, name: string) {
+  return request.headers.get("cookie")?.split(";").map((entry) => entry.trim()).find((entry) => entry.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
+}
+
+function base64Url(value: Uint8Array) {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function fromBase64Url(value: string) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+}
+
+async function hmac(value: string, secret: string) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return base64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value))));
+}
+
+function equal(value: string, expected: string) {
+  const a = new TextEncoder().encode(value);
+  const b = new TextEncoder().encode(expected);
+  let difference = a.length ^ b.length;
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  return difference === 0;
+}
+
+async function hasValidPasswordSession(request: Request, env: Env) {
+  if (!env.SESSION_SECRET) return false;
+  const [payload, signature] = cookieValue(request, "nf_inventory_session").split(".");
+  if (!payload || !signature || !equal(signature, await hmac(payload, env.SESSION_SECRET))) return false;
+  try { return Number(new TextDecoder().decode(fromBase64Url(payload))) > Date.now(); } catch { return false; }
+}
+
+function passwordRedirect(request: Request, token: string, maxAge: number) {
+  return new Response(null, { status: 303, headers: { location: new URL("/", request.url).toString(), "set-cookie": `nf_inventory_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}` } });
+}
+
+async function handlePasswordLogin(request: Request, env: Env) {
+  if (!env.APP_PASSWORD || !env.SESSION_SECRET) return new Response("Password access is not configured.", { status: 503 });
+  const password = String((await request.formData()).get("password") ?? "");
+  if (!equal(password, env.APP_PASSWORD)) return passwordPage("Mot de passe incorrect.");
+  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+  const payload = base64Url(new TextEncoder().encode(String(expiresAt)));
+  return passwordRedirect(request, `${payload}.${await hmac(payload, env.SESSION_SECRET)}`, 7 * 24 * 60 * 60);
+}
+
 function item(row: D1Row) {
   return {
     id: Number(row.id), legacyReference: String(row.legacy_reference), supplierPartNumber: String(row.supplier_part_number ?? ""), supplierCategoryCode: String(row.supplier_category_code), supplierName: String(row.supplier_name), description: String(row.description), quantityOnHand: Number(row.quantity_on_hand), lastCost: Number(row.last_cost), averageCost: Number(row.average_cost), dealerPrice: Number(row.dealer_price), salePrice: Number(row.sale_price), location: String(row.location), machineModel: String(row.machine_model), costUnit: String(row.cost_unit), detailUnit: String(row.detail_unit), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
@@ -129,10 +193,6 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/receipts" && request.method === "POST") return receiveStock(request, env.DB);
   if (url.pathname === "/api/receipts/batch" && request.method === "POST") return receiveStockBatch(request, env.DB);
   if (url.pathname === "/api/invoice-documents" && request.method === "POST") return uploadInvoiceDocument(request, env);
-  if (url.pathname === "/api/market-offers" && request.method === "GET") return listMarketOffers(env.DB);
-  if (url.pathname === "/api/market-offers" && request.method === "POST") return createMarketOffer(request, env.DB);
-  const lookupMatch = url.pathname.match(/^\/api\/market-lookup\/jacksew\/(\d+)$/);
-  if (lookupMatch && request.method === "GET") return lookupJacksew(env.DB, Number(lookupMatch[1]));
   if (url.pathname === "/api/issues" && request.method === "POST") return issueStock(request, env.DB);
   const match = url.pathname.match(/^\/api\/inventory\/(\d+)$/);
   if (match && request.method === "PATCH") return updateItem(request, env.DB, Number(match[1]));
@@ -160,71 +220,6 @@ async function locationContents(db: D1Database, location: string) {
 
 function text(value: unknown) { return typeof value === "string" ? value.trim() : ""; }
 function number(value: unknown) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; }
-
-function externalUrl(value: unknown) {
-  const candidate = text(value);
-  try {
-    const parsed = new URL(candidate);
-    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : "";
-  } catch { return ""; }
-}
-
-async function listMarketOffers(db: D1Database) {
-  const rows = await db.prepare("SELECT * FROM market_offers ORDER BY checked_at DESC, id DESC").all<D1Row>();
-  return json({ offers: rows.results.map((row) => ({ id: Number(row.id), inventoryId: Number(row.inventory_id), legacyReference: String(row.legacy_reference), sourceName: String(row.source_name), listingUrl: String(row.listing_url), price: Number(row.price), currency: String(row.currency), availability: String(row.availability), matchStatus: String(row.match_status), note: String(row.note), checkedAt: String(row.checked_at), createdAt: String(row.created_at) })) });
-}
-
-async function createMarketOffer(request: Request, db: D1Database) {
-  const body = await request.json<Record<string, unknown>>();
-  const inventoryId = number(body.inventoryId);
-  const sourceName = text(body.sourceName);
-  const listingUrl = externalUrl(body.listingUrl);
-  const price = number(body.price);
-  const currency = text(body.currency).toUpperCase();
-  const availability = text(body.availability) || "unknown";
-  const matchStatus = text(body.matchStatus) || "possible";
-  if (!inventoryId || !sourceName || !listingUrl || price < 0 || !currency) return json({ error: "Source, lien, prix et devise sont requis." }, 400);
-  const item = await db.prepare("SELECT legacy_reference FROM inventory_items WHERE id = ?").bind(inventoryId).first<D1Row>();
-  if (!item) return json({ error: "Cette pièce est introuvable." }, 404);
-  const result = await db.prepare("INSERT INTO market_offers (inventory_id, legacy_reference, source_name, listing_url, price, currency, availability, match_status, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(inventoryId, item.legacy_reference, sourceName, listingUrl, price, currency, availability, matchStatus, text(body.note)).run();
-  return json({ ok: true, id: Number(result.meta.last_row_id) }, 201);
-}
-
-function decodeHtml(value: string) {
-  return value.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function normalizePartNumber(value: string) { return value.toUpperCase().replace(/[^A-Z0-9]/g, ""); }
-
-async function lookupJacksew(db: D1Database, inventoryId: number) {
-  const inventory = await db.prepare("SELECT id, legacy_reference, supplier_part_number, description FROM inventory_items WHERE id = ?").bind(inventoryId).first<D1Row>();
-  if (!inventory) return json({ error: "Cette pièce est introuvable." }, 404);
-  const reference = String(inventory.supplier_part_number || inventory.legacy_reference);
-  const searchUrl = `https://parts.jacksew.com/search.php?search_query=${encodeURIComponent(reference)}`;
-  let html = "";
-  try {
-    const response = await fetch(searchUrl, { headers: { accept: "text/html" } });
-    if (!response.ok) throw new Error("Source unavailable");
-    html = await response.text();
-  } catch {
-    return json({ error: "Jacksew could not be reached right now. Use the source search link and try again later." }, 502);
-  }
-  const cards = html.match(/<li class="productCard productCard--grid">[\s\S]*?<\/article>\s*<\/li>/g) ?? [];
-  const candidates = cards.slice(0, 8).flatMap((card) => {
-    const link = card.match(/<h4 class="card-title">\s*<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
-    const price = card.match(/data-product-price-without-tax[^>]*>([\s\S]*?)<\/span>/);
-    if (!link || !price) return [];
-    const sku = decodeHtml(card.match(/data-test-info-type="sku">([\s\S]*?)<\/p>/)?.[1] ?? "").replace(/^SKU:\s*/i, "").replace(/#$/, "").trim();
-    const title = decodeHtml(link[2]);
-    const numericPrice = Number(decodeHtml(price[1]).replace(/[^0-9.-]/g, ""));
-    if (!Number.isFinite(numericPrice)) return [];
-    const availability = /sold out|out of stock|discontinued/i.test(card) ? "out_of_stock" : /\b\d+\s+available\b|ships in|in stock/i.test(card) ? "in_stock" : "unknown";
-    const exact = normalizePartNumber(sku) === normalizePartNumber(reference) || normalizePartNumber(title).includes(normalizePartNumber(reference));
-    return [{ sourceName: "Jacksew", listingUrl: decodeHtml(link[1]), title, sku, price: numericPrice, currency: "USD", currencyNeedsVerification: true, availability, matchStatus: exact ? "exact" : "possible" }];
-  });
-  return json({ checkedAt: new Date().toISOString(), sourceName: "Jacksew", searchedReference: reference, candidates });
-}
 
 async function createItem(request: Request, db: D1Database) {
   const body = await request.json<Record<string, unknown>>();

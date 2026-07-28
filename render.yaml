@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: confection-nf-denim-inventory
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: bash scripts/start-render.sh
+    healthCheckPath: /
+    disk:
+      name: nf-denim-inventory-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: APP_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
