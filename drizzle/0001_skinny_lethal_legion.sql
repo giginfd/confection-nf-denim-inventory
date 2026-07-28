@@ -1,0 +1,1 @@
+ALTER TABLE `inventory_items` ADD `legacy_raw_data` text DEFAULT '{}' NOT NULL;

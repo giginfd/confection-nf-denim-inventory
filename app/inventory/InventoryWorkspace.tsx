@@ -1,0 +1,241 @@
+"use client";
+
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import type { InventoryChange, InventoryItem, InventorySummary } from "../lib/inventory-types";
+
+type FormValues = Omit<InventoryItem, "id" | "createdAt" | "updatedAt">;
+
+const emptyForm: FormValues = {
+  legacyReference: "",
+  supplierCategoryCode: "",
+  supplierName: "",
+  description: "",
+  quantityOnHand: 0,
+  lastCost: 0,
+  averageCost: 0,
+  dealerPrice: 0,
+  salePrice: 0,
+  location: "",
+  machineModel: "",
+  costUnit: "EA",
+  detailUnit: "EA",
+};
+
+function money(value: number) {
+  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(value || 0);
+}
+
+function shortDate(value: string) {
+  return new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
+}
+
+export default function InventoryWorkspace() {
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [summary, setSummary] = useState<InventorySummary | null>(null);
+  const [activity, setActivity] = useState<InventoryChange[]>([]);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<InventoryItem | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState<FormValues>(emptyForm);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  const load = async (term = "") => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/inventory?search=${encodeURIComponent(term)}`);
+      if (!response.ok) throw new Error("Could not load inventory");
+      const payload = await response.json();
+      setItems(payload.items);
+      setSummary(payload.summary);
+      const activityResponse = await fetch("/api/activity");
+      if (activityResponse.ok) setActivity((await activityResponse.json()).activity);
+      setNotice("");
+    } catch {
+      setNotice("The inventory could not load. Please refresh and try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(search), 220);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  const formTitle = creating ? "Ajouter une pièce / Add a part" : `Modifier / Edit ${selected?.legacyReference ?? "part"}`;
+  const displayedItems = useMemo(() => items.slice(0, 80), [items]);
+
+  const openEdit = (item: InventoryItem) => {
+    setCreating(false);
+    setSelected(item);
+    setForm({
+      legacyReference: item.legacyReference,
+      supplierCategoryCode: item.supplierCategoryCode,
+      supplierName: item.supplierName,
+      description: item.description,
+      quantityOnHand: item.quantityOnHand,
+      lastCost: item.lastCost,
+      averageCost: item.averageCost,
+      dealerPrice: item.dealerPrice,
+      salePrice: item.salePrice,
+      location: item.location,
+      machineModel: item.machineModel,
+      costUnit: item.costUnit,
+      detailUnit: item.detailUnit,
+    });
+  };
+
+  const openCreate = () => {
+    setCreating(true);
+    setSelected(null);
+    setForm(emptyForm);
+  };
+
+  const updateField = (key: keyof FormValues, value: string) => {
+    const numeric = ["quantityOnHand", "lastCost", "averageCost", "dealerPrice", "salePrice"].includes(key);
+    setForm((current) => ({ ...current, [key]: numeric ? Number(value) || 0 : value }));
+  };
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!form.legacyReference.trim() || !form.description.trim()) {
+      setNotice("Une référence et une description sont requises / A reference and description are required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const response = await fetch(creating ? "/api/inventory" : `/api/inventory/${selected?.id}`, {
+        method: creating ? "POST" : "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not save the part");
+      setSelected(null);
+      setCreating(false);
+      setNotice(creating ? "Nouvelle pièce ajoutée / New part added." : "Pièce mise à jour / Part updated. La modification est enregistrée ci-dessous.");
+      await load(search);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not save the part.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <main className="shell">
+      <nav className="top-nav" aria-label="Navigation principale">
+        <strong>Confection NF Denim</strong>
+        <span>Inventaire <i>/</i> Inventory</span>
+      </nav>
+      <section className="hero">
+        <div>
+          <p className="eyebrow">Inventaire des pièces / Parts inventory</p>
+          <h1>Sachez ce qui est en stock.</h1>
+          <p className="hero-copy">La liste de pièces récupérée est votre point de départ. Recherchez, corrigez et conservez un historique clair de chaque ajustement.</p>
+        </div>
+        <div className="hero-note"><span className="pulse" />Inventaire récupéré · 2021</div>
+      </section>
+
+      {notice && <div className="notice" role="status">{notice}</div>}
+
+      <section className="metrics" aria-label="Inventory summary">
+        <Metric label="Produits / Products" value={summary?.productCount.toLocaleString() ?? "—"} detail="fiches de pièces actuelles" />
+        <Metric label="En stock / On hand" value={summary?.unitsOnHand.toLocaleString() ?? "—"} detail="unités dans toutes les pièces" />
+        <Metric label="À zéro / Zero stock" value={summary?.zeroStockCount.toLocaleString() ?? "—"} detail="pièces à vérifier" warning />
+        <Metric label="Fournisseurs / Suppliers" value={summary?.supplierCount.toLocaleString() ?? "—"} detail="catégories dans l'inventaire" />
+      </section>
+
+      <section className="workspace">
+        <div className="inventory-panel">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Inventaire / Inventory</p>
+              <h2>Catalogue de pièces</h2>
+            </div>
+            <button className="primary" onClick={openCreate}>Ajouter une pièce</button>
+          </div>
+          <div className="search-row">
+            <label className="search-box">
+              <span>⌕</span>
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Rechercher : référence, pièce, fournisseur, emplacement ou machine" aria-label="Rechercher dans l'inventaire" />
+            </label>
+            <span className="results-count">{loading ? "Chargement…" : `${items.length.toLocaleString()} résultats`}</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Référence / SKU</th><th>Pièce / Part</th><th>En stock</th><th>Emplacement</th><th>Fournisseur</th><th>Dernier coût</th></tr></thead>
+              <tbody>
+                {displayedItems.map((item) => (
+                  <tr key={item.id} onClick={() => openEdit(item)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && openEdit(item)}>
+                    <td className="sku">{item.legacyReference}</td>
+                    <td><strong>{item.description}</strong><small>{item.machineModel || "Aucun modèle de machine"}</small></td>
+                    <td><span className={item.quantityOnHand === 0 ? "quantity zero" : "quantity"}>{item.quantityOnHand}</span></td>
+                    <td>{item.location || <span className="muted">—</span>}</td>
+                    <td>{item.supplierName || <span className="muted">—</span>}</td>
+                    <td>{money(item.lastCost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!loading && !items.length && <p className="empty">Aucune pièce ne correspond à cette recherche.</p>}
+          </div>
+          {items.length > displayedItems.length && <p className="table-foot">Les 80 premiers résultats sont affichés. Précisez votre recherche pour réduire la liste.</p>}
+        </div>
+
+        <aside className="activity-panel">
+          <p className="eyebrow">Historique / Activity</p>
+          <h2>Modifications récentes</h2>
+          <p className="aside-copy">Chaque nouvelle pièce et chaque correction sauvegardée apparaissent ici.</p>
+          <div className="activity-list">
+            {activity.length ? activity.map((entry) => (
+              <article className="activity" key={entry.id}>
+                <div className="activity-dot" />
+                <div><strong>{entry.changeType}</strong><p>{entry.legacyReference} · {entry.description}</p><small>{entry.note || "Saved in the inventory workspace"} · {shortDate(entry.createdAt)}</small></div>
+              </article>
+            )) : <p className="empty">Aucune modification pour l'instant. L'inventaire récupéré reste votre point de départ.</p>}
+          </div>
+        </aside>
+      </section>
+
+      {(selected || creating) && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="editor" role="dialog" aria-modal="true" aria-label={formTitle}>
+            <div className="editor-heading"><div><p className="eyebrow">Inventory record</p><h2>{formTitle}</h2></div><button className="close" onClick={() => { setSelected(null); setCreating(false); }}>×</button></div>
+            <form onSubmit={save}>
+              <div className="form-grid">
+                <Field label="Référence / SKU" value={form.legacyReference} onChange={(value) => updateField("legacyReference", value)} required />
+                <Field label="Description / Description" value={form.description} onChange={(value) => updateField("description", value)} required />
+                <Field label="Quantité en stock / On hand" type="number" value={form.quantityOnHand} onChange={(value) => updateField("quantityOnHand", value)} />
+                <Field label="Emplacement / Location" value={form.location} onChange={(value) => updateField("location", value)} />
+                <Field label="Fournisseur / Supplier" value={form.supplierName} onChange={(value) => updateField("supplierName", value)} />
+                <Field label="Catégorie fournisseur / Supplier category" value={form.supplierCategoryCode} onChange={(value) => updateField("supplierCategoryCode", value)} />
+                <Field label="Modèle de machine / Machine model" value={form.machineModel} onChange={(value) => updateField("machineModel", value)} />
+                <Field label="Dernier coût / Last cost (CAD)" type="number" value={form.lastCost} onChange={(value) => updateField("lastCost", value)} />
+                <Field label="Coût moyen / Average cost (CAD)" type="number" value={form.averageCost} onChange={(value) => updateField("averageCost", value)} />
+                <Field label="Prix de vente / Sale price (CAD)" type="number" value={form.salePrice} onChange={(value) => updateField("salePrice", value)} />
+                <Field label="Unité coût / Cost unit" value={form.costUnit} onChange={(value) => updateField("costUnit", value)} />
+                <Field label="Unité détail / Detail unit" value={form.detailUnit} onChange={(value) => updateField("detailUnit", value)} />
+              </div>
+              <div className="form-actions"><button type="button" className="secondary" onClick={() => { setSelected(null); setCreating(false); }}>Annuler / Cancel</button><button className="primary" disabled={saving}>{saving ? "Sauvegarde…" : creating ? "Ajouter la pièce" : "Sauvegarder"}</button></div>
+            </form>
+          </section>
+        </div>
+      )}
+    </main>
+  );
+}
+
+function Metric({ label, value, detail, warning = false }: { label: string; value: string; detail: string; warning?: boolean }) {
+  return <article className={warning ? "metric warning" : "metric"}><p>{label}</p><strong>{value}</strong><span>{detail}</span></article>;
+}
+
+function Field({ label, value, onChange, type = "text", required = false }: { label: string; value: string | number; onChange: (value: string) => void; type?: string; required?: boolean }) {
+  return <label className="field"><span>{label}</span><input type={type} value={value} step={type === "number" ? "any" : undefined} required={required} onChange={(event) => onChange(event.target.value)} /></label>;
+}
