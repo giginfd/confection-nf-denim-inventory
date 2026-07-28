@@ -19,6 +19,7 @@ type MarketOffer = {
 };
 
 type OfferForm = Pick<MarketOffer, "sourceName" | "listingUrl" | "price" | "currency" | "availability" | "matchStatus" | "note">;
+type LiveCandidate = { sourceName: string; listingUrl: string; title: string; sku: string; price: number; currency: string; currencyNeedsVerification: boolean; availability: string; matchStatus: string };
 
 const sources = [
   ["Central Sewing", "centralsewing.com"], ["RB Digital", "rbdigital.ca"], ["Excelle Machine à Coudre", "excellemachineacoudre.com"], ["Sewing Perfection", "sewingperfection.com"], ["Grainger Canada", "grainger.ca"], ["Strapco", "strapco.ca"], ["Wainbee", "wainbee.com"], ["Bobbin USA", "bobbinusa.com"], ["Jacksew", "parts.jacksew.com"], ["Sewing Parts Online", "sewingpartsonline.com"], ["eBay", "ebay.com"], ["Amazon", "amazon.com"], ["Walmart", "walmart.com"],
@@ -47,6 +48,9 @@ export default function MarketPricingWorkspace() {
   const [form, setForm] = useState<OfferForm>(emptyOffer);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [checkingJacksew, setCheckingJacksew] = useState(false);
+  const [liveCandidates, setLiveCandidates] = useState<LiveCandidate[]>([]);
+  const [liveLookupMessage, setLiveLookupMessage] = useState("");
   const [notice, setNotice] = useState("");
 
   const load = async (term = "") => {
@@ -80,6 +84,28 @@ export default function MarketPricingWorkspace() {
   const openResearch = (item: InventoryItem) => {
     setSelected(item);
     setForm(emptyOffer);
+    setLiveCandidates([]);
+    setLiveLookupMessage("");
+  };
+
+  const checkJacksew = async () => {
+    if (!selected) return;
+    setCheckingJacksew(true);
+    setLiveCandidates([]);
+    setLiveLookupMessage("");
+    try {
+      const response = await fetch(`/api/market-lookup/jacksew/${selected.id}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Unable to check Jacksew.");
+      setLiveCandidates(payload.candidates ?? []);
+      setLiveLookupMessage(payload.candidates?.length ? "Review a candidate before using it. Nothing has been saved." : "No priced Jacksew candidates were found for this reference.");
+    } catch (error) {
+      setLiveLookupMessage(error instanceof Error ? error.message : "Unable to check Jacksew.");
+    } finally { setCheckingJacksew(false); }
+  };
+
+  const useCandidate = (candidate: LiveCandidate) => {
+    setForm({ sourceName: candidate.sourceName, listingUrl: candidate.listingUrl, price: candidate.price, currency: candidate.currency, availability: candidate.availability, matchStatus: candidate.matchStatus, note: `${candidate.title}${candidate.sku ? ` · SKU ${candidate.sku}` : ""}${candidate.currencyNeedsVerification ? " · Verify the displayed currency before saving." : ""}` });
   };
 
   const saveOffer = async (event: FormEvent) => {
@@ -120,6 +146,9 @@ export default function MarketPricingWorkspace() {
 
     {selected && <div className="modal-backdrop" role="presentation"><section className="editor market-editor" role="dialog" aria-modal="true" aria-label="Research market price"><div className="editor-heading"><div><p className="eyebrow">Market research</p><h2>{selected.legacyReference} · {selected.description}</h2></div><button className="close" onClick={() => setSelected(null)}>×</button></div><p className="workflow-intro">Search a source below, verify the exact part and currency on its product page, then save the listing. A saved offer never replaces your Prix coûtant.</p>
       <div className="source-grid">{sources.map(([name, domain]) => <a key={domain} className="source-card" href={searchUrl(domain, selected)} target="_blank" rel="noreferrer"><strong>{name}</strong><span>Search this source ↗</span></a>)}</div>
+      <section className="live-lookup"><div><strong>Live Jacksew check</strong><span>Searches the public Jacksew catalogue now. Results are suggestions only and are never saved automatically.</span></div><button type="button" className="primary" disabled={checkingJacksew} onClick={checkJacksew}>{checkingJacksew ? "Checking Jacksew…" : "Check Jacksew now"}</button></section>
+      {liveLookupMessage && <p className="live-message">{liveLookupMessage}</p>}
+      {liveCandidates.length > 0 && <div className="candidate-list">{liveCandidates.map((candidate) => <article className="candidate" key={candidate.listingUrl}><div><strong>{candidate.title}</strong><span>{candidate.sku ? `SKU ${candidate.sku} · ` : ""}{money(candidate.price, candidate.currency)} · {availabilityLabel(candidate.availability)} · {matchLabel(candidate.matchStatus)}</span></div><button type="button" className="secondary" onClick={() => useCandidate(candidate)}>Use this result</button></article>)}</div>}
       <form onSubmit={saveOffer}><div className="form-grid"><label className="field"><span>Source</span><select value={form.sourceName} onChange={(event) => setForm((current) => ({ ...current, sourceName: event.target.value }))}>{sources.map(([name]) => <option key={name}>{name}</option>)}</select></label><label className="field"><span>Price shown on source</span><input required type="number" min="0" step="any" value={form.price} onChange={(event) => setForm((current) => ({ ...current, price: Number(event.target.value) || 0 }))} /></label><label className="field"><span>Currency shown on source</span><select value={form.currency} onChange={(event) => setForm((current) => ({ ...current, currency: event.target.value }))}><option>CAD</option><option>USD</option><option>EUR</option><option>Other</option></select></label><label className="field"><span>Availability</span><select value={form.availability} onChange={(event) => setForm((current) => ({ ...current, availability: event.target.value }))}><option value="in_stock">In stock</option><option value="limited">Limited / low stock</option><option value="out_of_stock">Out of stock</option><option value="unknown">Not shown</option></select></label><label className="field"><span>Match status</span><select value={form.matchStatus} onChange={(event) => setForm((current) => ({ ...current, matchStatus: event.target.value }))}><option value="exact">Exact part-number match</option><option value="possible">Possible match — verify</option><option value="used">Used / surplus</option></select></label><label className="field"><span>Exact product-page link</span><input required type="url" placeholder="https://…" value={form.listingUrl} onChange={(event) => setForm((current) => ({ ...current, listingUrl: event.target.value }))} /></label><label className="field full"><span>Note (optional)</span><input value={form.note} placeholder="Package quantity, shipping note, compatible machine…" onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} /></label></div><div className="form-actions"><button type="button" className="secondary" onClick={() => setSelected(null)}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : "Save confirmed listing"}</button></div></form>
     </section></div>}
   </main>;

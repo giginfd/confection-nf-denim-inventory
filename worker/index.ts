@@ -114,6 +114,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/invoice-documents" && request.method === "POST") return uploadInvoiceDocument(request, env);
   if (url.pathname === "/api/market-offers" && request.method === "GET") return listMarketOffers(env.DB);
   if (url.pathname === "/api/market-offers" && request.method === "POST") return createMarketOffer(request, env.DB);
+  const lookupMatch = url.pathname.match(/^\/api\/market-lookup\/jacksew\/(\d+)$/);
+  if (lookupMatch && request.method === "GET") return lookupJacksew(env.DB, Number(lookupMatch[1]));
   if (url.pathname === "/api/issues" && request.method === "POST") return issueStock(request, env.DB);
   const match = url.pathname.match(/^\/api\/inventory\/(\d+)$/);
   if (match && request.method === "PATCH") return updateItem(request, env.DB, Number(match[1]));
@@ -170,6 +172,41 @@ async function createMarketOffer(request: Request, db: D1Database) {
   const result = await db.prepare("INSERT INTO market_offers (inventory_id, legacy_reference, source_name, listing_url, price, currency, availability, match_status, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .bind(inventoryId, item.legacy_reference, sourceName, listingUrl, price, currency, availability, matchStatus, text(body.note)).run();
   return json({ ok: true, id: Number(result.meta.last_row_id) }, 201);
+}
+
+function decodeHtml(value: string) {
+  return value.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizePartNumber(value: string) { return value.toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+
+async function lookupJacksew(db: D1Database, inventoryId: number) {
+  const inventory = await db.prepare("SELECT id, legacy_reference, description FROM inventory_items WHERE id = ?").bind(inventoryId).first<D1Row>();
+  if (!inventory) return json({ error: "Cette pièce est introuvable." }, 404);
+  const reference = String(inventory.legacy_reference);
+  const searchUrl = `https://parts.jacksew.com/search.php?search_query=${encodeURIComponent(reference)}`;
+  let html = "";
+  try {
+    const response = await fetch(searchUrl, { headers: { accept: "text/html" } });
+    if (!response.ok) throw new Error("Source unavailable");
+    html = await response.text();
+  } catch {
+    return json({ error: "Jacksew could not be reached right now. Use the source search link and try again later." }, 502);
+  }
+  const cards = html.match(/<li class="productCard productCard--grid">[\s\S]*?<\/article>\s*<\/li>/g) ?? [];
+  const candidates = cards.slice(0, 8).flatMap((card) => {
+    const link = card.match(/<h4 class="card-title">\s*<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+    const price = card.match(/data-product-price-without-tax[^>]*>([\s\S]*?)<\/span>/);
+    if (!link || !price) return [];
+    const sku = decodeHtml(card.match(/data-test-info-type="sku">([\s\S]*?)<\/p>/)?.[1] ?? "").replace(/^SKU:\s*/i, "").replace(/#$/, "").trim();
+    const title = decodeHtml(link[2]);
+    const numericPrice = Number(decodeHtml(price[1]).replace(/[^0-9.-]/g, ""));
+    if (!Number.isFinite(numericPrice)) return [];
+    const availability = /sold out|out of stock|discontinued/i.test(card) ? "out_of_stock" : /\b\d+\s+available\b|ships in|in stock/i.test(card) ? "in_stock" : "unknown";
+    const exact = normalizePartNumber(sku) === normalizePartNumber(reference) || normalizePartNumber(title).includes(normalizePartNumber(reference));
+    return [{ sourceName: "Jacksew", listingUrl: decodeHtml(link[1]), title, sku, price: numericPrice, currency: "USD", currencyNeedsVerification: true, availability, matchStatus: exact ? "exact" : "possible" }];
+  });
+  return json({ checkedAt: new Date().toISOString(), sourceName: "Jacksew", searchedReference: reference, candidates });
 }
 
 async function createItem(request: Request, db: D1Database) {
