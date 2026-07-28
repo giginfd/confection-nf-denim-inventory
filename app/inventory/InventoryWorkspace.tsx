@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { InventoryChange, InventoryItem, InventorySummary } from "../lib/inventory-types";
+import AppNavigation from "../components/AppNavigation";
 
 type FormValues = Omit<InventoryItem, "id" | "createdAt" | "updatedAt">;
 type Workflow = "receipt" | "issue" | null;
@@ -182,14 +183,11 @@ export default function InventoryWorkspace() {
 
   return (
     <main className="shell">
-      <nav className="top-nav" aria-label="Navigation principale">
-        <strong>Confection NF Denim</strong>
-        <span>Inventaire <i>/</i> Inventory</span>
-      </nav>
+      <AppNavigation active="inventory" />
       <section className="hero">
         <div>
           <p className="eyebrow">Inventaire des pièces / Parts inventory</p>
-          <h1>Sachez ce qui est en stock.</h1>
+          <h1>Confection NF Denim - Stornway INC.</h1>
           <p className="hero-copy">La liste de pièces récupérée est votre point de départ. Recherchez, corrigez et conservez un historique clair de chaque ajustement.</p>
         </div>
         <div className="hero-note"><span className="pulse" />Inventaire récupéré · 2021</div>

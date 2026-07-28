@@ -100,12 +100,25 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const changes = await env.DB.prepare("SELECT * FROM inventory_changes ORDER BY id DESC LIMIT 12").all<D1Row>();
     return json({ activity: changes.results.map((row) => ({ id: Number(row.id), inventoryId: Number(row.inventory_id), legacyReference: String(row.legacy_reference), description: String(row.description), changeType: String(row.change_type), note: String(row.note), createdAt: String(row.created_at) })) });
   }
+  if (url.pathname === "/api/locations" && request.method === "GET") return listLocations(env.DB);
+  const locationMatch = url.pathname.match(/^\/api\/locations\/([^/]+)$/);
+  if (locationMatch && request.method === "GET") return locationContents(env.DB, decodeURIComponent(locationMatch[1]));
   if (url.pathname === "/api/inventory" && request.method === "POST") return createItem(request, env.DB);
   if (url.pathname === "/api/receipts" && request.method === "POST") return receiveStock(request, env.DB);
   if (url.pathname === "/api/issues" && request.method === "POST") return issueStock(request, env.DB);
   const match = url.pathname.match(/^\/api\/inventory\/(\d+)$/);
   if (match && request.method === "PATCH") return updateItem(request, env.DB, Number(match[1]));
   return json({ error: "Not found" }, 404);
+}
+
+async function listLocations(db: D1Database) {
+  const rows = await db.prepare("SELECT location, COUNT(*) AS part_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand FROM inventory_items WHERE location <> '' GROUP BY location ORDER BY location").all<D1Row>();
+  return json({ locations: rows.results.map((row) => ({ location: String(row.location), partCount: Number(row.part_count), unitsOnHand: Number(row.units_on_hand) })) });
+}
+
+async function locationContents(db: D1Database, location: string) {
+  const rows = await db.prepare("SELECT legacy_reference, description, quantity_on_hand, last_cost, machine_model FROM inventory_items WHERE location = ? ORDER BY description").bind(location).all<D1Row>();
+  return json({ items: rows.results.map((row) => ({ legacyReference: String(row.legacy_reference), description: String(row.description), quantityOnHand: Number(row.quantity_on_hand), lastCost: Number(row.last_cost), machineModel: String(row.machine_model) })) });
 }
 
 function text(value: unknown) { return typeof value === "string" ? value.trim() : ""; }
