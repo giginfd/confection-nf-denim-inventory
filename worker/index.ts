@@ -155,8 +155,8 @@ async function receiveStock(request: Request, db: D1Database) {
   const unitCost = number(body.unitCost);
   await db.batch([
     db.prepare("UPDATE inventory_items SET quantity_on_hand = ?, location = ?, supplier_name = ?, last_cost = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(after, location, supplier, unitCost, current.id),
-    db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(current.id, reference, current.description, "Réception fournisseur / Supplier receipt", quantity, before, after, location, supplier, invoice, "Facture reçue / Invoice received"),
-    db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(current.id, reference, current.description, "Réception fournisseur", `+${quantity} · ${location}${invoice ? ` · Facture ${invoice}` : ""}`),
+    db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(current.id, reference, current.description, "Entrée d'inventaire / Stock received", quantity, before, after, location, supplier, invoice, "Facture reçue / Invoice received"),
+    db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(current.id, reference, current.description, "Entrée d'inventaire", `+${quantity} · ${location}${invoice ? ` · Facture ${invoice}` : ""}`),
   ]);
   return json({ ok: true, quantityAfter: after });
 }

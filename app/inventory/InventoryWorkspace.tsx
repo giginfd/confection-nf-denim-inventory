@@ -93,7 +93,7 @@ export default function InventoryWorkspace() {
     return () => window.clearTimeout(timer);
   }, [search]);
 
-  const formTitle = creating ? "Ajouter une pièce / Add a part" : `Modifier / Edit ${selected?.legacyReference ?? "part"}`;
+  const formTitle = creating ? "Nouvelle fiche produit / New product record" : `Modifier / Edit ${selected?.legacyReference ?? "part"}`;
   const displayedItems = useMemo(() => items.slice(0, 80), [items]);
 
   const openEdit = (item: InventoryItem) => {
@@ -149,7 +149,7 @@ export default function InventoryWorkspace() {
       if (!response.ok) throw new Error(payload.error || "Could not save the part");
       setSelected(null);
       setCreating(false);
-      setNotice(creating ? "Nouvelle pièce ajoutée / New part added." : "Pièce mise à jour / Part updated. La modification est enregistrée ci-dessous.");
+      setNotice(creating ? "Nouvelle fiche produit ajoutée." : "Pièce mise à jour / Part updated. La modification est enregistrée ci-dessous.");
       await load(search);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not save the part.");
@@ -171,7 +171,7 @@ export default function InventoryWorkspace() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Impossible de modifier l'inventaire.");
       setWorkflow(null);
-      setNotice(workflow === "receipt" ? "Réception ajoutée à l'inventaire." : "Sortie enregistrée dans l'inventaire.");
+      setNotice(workflow === "receipt" ? "Entrée ajoutée à l'inventaire." : "Sortie enregistrée dans l'inventaire.");
       await load(search);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Impossible de modifier l'inventaire.");
@@ -212,9 +212,9 @@ export default function InventoryWorkspace() {
               <h2>Catalogue de pièces</h2>
             </div>
             <div className="action-group">
-              <button className="secondary" onClick={() => openWorkflow("receipt")}>Réception fournisseur</button>
-              <button className="issue-button" onClick={() => openWorkflow("issue")}>Sortie / casse</button>
-              <button className="primary" onClick={openCreate}>Ajouter une pièce</button>
+              <button className="primary" onClick={() => openWorkflow("receipt")}>Entrée d'inventaire</button>
+              <button className="issue-button" onClick={() => openWorkflow("issue")}>Sortie d'inventaire</button>
+              <button className="secondary" onClick={openCreate}>Nouvelle fiche produit</button>
             </div>
           </div>
           <div className="search-row">
@@ -287,12 +287,12 @@ export default function InventoryWorkspace() {
 
       {workflow && (
         <div className="modal-backdrop" role="presentation">
-          <section className="editor movement-editor" role="dialog" aria-modal="true" aria-label={workflow === "receipt" ? "Réception fournisseur" : "Sortie de stock"}>
+          <section className="editor movement-editor" role="dialog" aria-modal="true" aria-label={workflow === "receipt" ? "Entrée d'inventaire" : "Sortie d'inventaire"}>
             <div className="editor-heading">
-              <div><p className="eyebrow">Mouvement d'inventaire</p><h2>{workflow === "receipt" ? "Réception fournisseur" : "Sortie / casse"}</h2></div>
+              <div><p className="eyebrow">Mouvement d'inventaire</p><h2>{workflow === "receipt" ? "Entrée d'inventaire" : "Sortie d'inventaire"}</h2></div>
               <button className="close" onClick={() => setWorkflow(null)}>×</button>
             </div>
-            <p className="workflow-intro">{workflow === "receipt" ? "Ajoutez une ligne de facture, sa quantité, son prix coûtant et l'emplacement où la pièce est rangée." : "Enregistrez une pièce utilisée ou cassée. La quantité ne peut pas descendre sous zéro."}</p>
+            <p className="workflow-intro">{workflow === "receipt" ? "Ajoutez une ligne de facture, sa quantité, son prix coûtant et l'emplacement où la pièce est rangée." : "Enregistrez toute pièce qui sort de l'inventaire. La quantité ne peut pas descendre sous zéro."}</p>
             <form onSubmit={saveMovement}>
               <div className="form-grid">
                 <label className="field"><span>No produit</span><input list="product-numbers" value={movement.legacyReference} required placeholder="Ex. 2344" onChange={(event) => setMovement((current) => ({ ...current, legacyReference: event.target.value }))} /><datalist id="product-numbers">{items.map((item) => <option key={item.id} value={item.legacyReference}>{item.description}</option>)}</datalist></label>
@@ -307,7 +307,7 @@ export default function InventoryWorkspace() {
                   <Field label="Note (facultatif)" value={movement.note} onChange={(value) => setMovement((current) => ({ ...current, note: value }))} />
                 </>}
               </div>
-              <div className="form-actions"><button type="button" className="secondary" onClick={() => setWorkflow(null)}>Annuler</button><button className={workflow === "issue" ? "issue-button" : "primary"} disabled={saving}>{saving ? "Sauvegarde…" : workflow === "receipt" ? "Ajouter au stock" : "Sortir du stock"}</button></div>
+              <div className="form-actions"><button type="button" className="secondary" onClick={() => setWorkflow(null)}>Annuler</button><button className={workflow === "issue" ? "issue-button" : "primary"} disabled={saving}>{saving ? "Sauvegarde…" : workflow === "receipt" ? "Ajouter à l'inventaire" : "Confirmer la sortie"}</button></div>
             </form>
           </section>
         </div>
