@@ -46,3 +46,16 @@ export const stockMovements = sqliteTable("stock_movements", {
   note: text("note").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const invoiceDocuments = sqliteTable("invoice_documents", {
+  id: text("id").primaryKey(),
+  objectKey: text("object_key").notNull().unique(),
+  fileName: text("file_name").notNull(),
+  contentType: text("content_type").notNull().default("application/pdf"),
+  sizeBytes: integer("size_bytes").notNull().default(0),
+  status: text("status").notNull().default("uploaded"),
+  invoiceNumber: text("invoice_number").notNull().default(""),
+  supplierName: text("supplier_name").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  confirmedAt: text("confirmed_at"),
+});

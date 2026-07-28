@@ -7,6 +7,7 @@ import { inventorySeed } from "../app/lib/inventory-seed";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  INVOICES?: R2Bucket;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -58,9 +59,11 @@ const initializeStatements = [
   `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_reference TEXT NOT NULL UNIQUE, supplier_category_code TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL, quantity_on_hand REAL NOT NULL DEFAULT 0, last_cost REAL NOT NULL DEFAULT 0, average_cost REAL NOT NULL DEFAULT 0, dealer_price REAL NOT NULL DEFAULT 0, sale_price REAL NOT NULL DEFAULT 0, location TEXT NOT NULL DEFAULT '', machine_model TEXT NOT NULL DEFAULT '', cost_unit TEXT NOT NULL DEFAULT '', detail_unit TEXT NOT NULL DEFAULT '', legacy_raw_data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS inventory_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, change_type TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_delta REAL NOT NULL, quantity_before REAL NOT NULL, quantity_after REAL NOT NULL, location TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', invoice_number TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS invoice_documents (id TEXT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, file_name TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/pdf', size_bytes INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'uploaded', invoice_number TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS inventory_items_description_idx ON inventory_items(description)`,
   `CREATE INDEX IF NOT EXISTS inventory_changes_created_idx ON inventory_changes(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS stock_movements_inventory_idx ON stock_movements(inventory_id)`,
+  `CREATE INDEX IF NOT EXISTS invoice_documents_created_idx ON invoice_documents(created_at DESC)`,
 ];
 
 async function initialize(db: D1Database) {
@@ -105,6 +108,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (locationMatch && request.method === "GET") return locationContents(env.DB, decodeURIComponent(locationMatch[1]));
   if (url.pathname === "/api/inventory" && request.method === "POST") return createItem(request, env.DB);
   if (url.pathname === "/api/receipts" && request.method === "POST") return receiveStock(request, env.DB);
+  if (url.pathname === "/api/receipts/batch" && request.method === "POST") return receiveStockBatch(request, env.DB);
+  if (url.pathname === "/api/invoice-documents" && request.method === "POST") return uploadInvoiceDocument(request, env);
   if (url.pathname === "/api/issues" && request.method === "POST") return issueStock(request, env.DB);
   const match = url.pathname.match(/^\/api\/inventory\/(\d+)$/);
   if (match && request.method === "PATCH") return updateItem(request, env.DB, Number(match[1]));
@@ -172,6 +177,61 @@ async function receiveStock(request: Request, db: D1Database) {
     db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(current.id, reference, current.description, "Entrée d'inventaire", `+${quantity} · ${location}${invoice ? ` · Facture ${invoice}` : ""}`),
   ]);
   return json({ ok: true, quantityAfter: after });
+}
+
+async function uploadInvoiceDocument(request: Request, env: Env) {
+  if (!env.INVOICES) return json({ error: "Le stockage sécurisé des factures n'est pas encore disponible." }, 503);
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) return json({ error: "Choisissez une facture PDF." }, 400);
+  const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  if (!isPdf) return json({ error: "Seuls les fichiers PDF sont acceptés." }, 400);
+  if (file.size === 0 || file.size > 20 * 1024 * 1024) return json({ error: "Le PDF doit faire au plus 20 Mo." }, 400);
+  const id = crypto.randomUUID();
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const objectKey = `invoices/${id}/${safeName}`;
+  await env.INVOICES.put(objectKey, file.stream(), { httpMetadata: { contentType: "application/pdf" } });
+  await env.DB.prepare("INSERT INTO invoice_documents (id, object_key, file_name, content_type, size_bytes, status) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(id, objectKey, file.name, file.type || "application/pdf", file.size, "uploaded").run();
+  return json({ document: { id, fileName: file.name, sizeBytes: file.size, status: "uploaded" } }, 201);
+}
+
+type ReceiptLine = { legacyReference?: unknown; quantity?: unknown; location?: unknown; supplierName?: unknown; unitCost?: unknown };
+
+async function receiveStockBatch(request: Request, db: D1Database) {
+  const body = await request.json<{ lines?: ReceiptLine[]; invoiceNumber?: unknown; documentId?: unknown }>();
+  const lines = Array.isArray(body.lines) ? body.lines : [];
+  const invoice = text(body.invoiceNumber);
+  const documentId = text(body.documentId);
+  if (!lines.length) return json({ error: "Ajoutez au moins une ligne de facture." }, 400);
+  if (lines.length > 100) return json({ error: "Une réception peut contenir au plus 100 lignes." }, 400);
+  if (documentId) {
+    const document = await db.prepare("SELECT id FROM invoice_documents WHERE id = ?").bind(documentId).first<D1Row>();
+    if (!document) return json({ error: "La facture PDF est introuvable. Téléversez-la de nouveau." }, 404);
+  }
+  const prepared: Array<{ current: D1Row; reference: string; quantity: number; location: string; supplier: string; unitCost: number }> = [];
+  for (const line of lines) {
+    const reference = text(line.legacyReference);
+    const location = text(line.location);
+    const quantity = number(line.quantity);
+    if (!reference || !location || quantity <= 0) return json({ error: "Chaque ligne requiert un No produit, une quantité et un emplacement." }, 400);
+    const current = await db.prepare("SELECT * FROM inventory_items WHERE legacy_reference = ?").bind(reference).first<D1Row>();
+    if (!current) return json({ error: `Le No produit ${reference} est introuvable. Ajoutez la pièce avant de confirmer.` }, 404);
+    prepared.push({ current, reference, quantity, location, supplier: text(line.supplierName) || String(current.supplier_name), unitCost: number(line.unitCost) });
+  }
+  const statements: D1PreparedStatement[] = [];
+  for (const line of prepared) {
+    const before = Number(line.current.quantity_on_hand);
+    const after = before + line.quantity;
+    statements.push(
+      db.prepare("UPDATE inventory_items SET quantity_on_hand = ?, location = ?, supplier_name = ?, last_cost = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(after, line.location, line.supplier, line.unitCost, line.current.id),
+      db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(line.current.id, line.reference, line.current.description, "Entrée d'inventaire / Stock received", line.quantity, before, after, line.location, line.supplier, invoice, documentId ? "Facture PDF confirmée / PDF invoice confirmed" : "Entrée d'inventaire confirmée / Stock receipt confirmed"),
+      db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(line.current.id, line.reference, line.current.description, "Entrée d'inventaire", `+${line.quantity} · ${line.location}${invoice ? ` · Facture ${invoice}` : ""}`),
+    );
+  }
+  if (documentId) statements.push(db.prepare("UPDATE invoice_documents SET status = ?, invoice_number = ?, supplier_name = ?, confirmed_at = CURRENT_TIMESTAMP WHERE id = ?").bind("confirmed", invoice, prepared[0]?.supplier ?? "", documentId));
+  await db.batch(statements);
+  return json({ ok: true, linesConfirmed: prepared.length });
 }
 
 async function issueStock(request: Request, db: D1Database) {

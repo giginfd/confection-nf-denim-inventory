@@ -18,6 +18,16 @@ type MovementValues = {
   note: string;
 };
 
+type ReceiptLine = {
+  legacyReference: string;
+  quantity: number;
+  location: string;
+  supplierName: string;
+  unitCost: number;
+};
+
+type InvoiceDocument = { id: string; fileName: string; sizeBytes: number };
+
 const emptyForm: FormValues = {
   legacyReference: "",
   supplierCategoryCode: "",
@@ -45,6 +55,8 @@ const emptyMovement: MovementValues = {
   note: "",
 };
 
+const emptyReceiptLine = (): ReceiptLine => ({ legacyReference: "", quantity: 1, location: "", supplierName: "", unitCost: 0 });
+
 function money(value: number) {
   return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(value || 0);
 }
@@ -66,6 +78,10 @@ export default function InventoryWorkspace() {
   const [notice, setNotice] = useState("");
   const [workflow, setWorkflow] = useState<Workflow>(null);
   const [movement, setMovement] = useState<MovementValues>(emptyMovement);
+  const [receiptLines, setReceiptLines] = useState<ReceiptLine[]>([emptyReceiptLine()]);
+  const [invoiceDocument, setInvoiceDocument] = useState<InvoiceDocument | null>(null);
+  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
+  const [uploadingInvoice, setUploadingInvoice] = useState(false);
 
   const load = async (term = "") => {
     setLoading(true);
@@ -126,6 +142,9 @@ export default function InventoryWorkspace() {
   const openWorkflow = (kind: Exclude<Workflow, null>) => {
     setWorkflow(kind);
     setMovement(emptyMovement);
+    setReceiptLines([emptyReceiptLine()]);
+    setInvoiceDocument(null);
+    setInvoiceFile(null);
   };
 
   const updateField = (key: keyof FormValues, value: string) => {
@@ -164,21 +183,46 @@ export default function InventoryWorkspace() {
     if (!workflow) return;
     setSaving(true);
     try {
-      const response = await fetch(workflow === "receipt" ? "/api/receipts" : "/api/issues", {
+      const response = await fetch(workflow === "receipt" ? "/api/receipts/batch" : "/api/issues", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(movement),
+        body: JSON.stringify(workflow === "receipt" ? { lines: receiptLines, invoiceNumber: movement.invoiceNumber, documentId: invoiceDocument?.id } : movement),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Impossible de modifier l'inventaire.");
       setWorkflow(null);
-      setNotice(workflow === "receipt" ? "Entrée ajoutée à l'inventaire." : "Sortie enregistrée dans l'inventaire.");
+      setNotice(workflow === "receipt" ? `${payload.linesConfirmed ?? 1} ligne(s) ajoutée(s) à l'inventaire.` : "Sortie enregistrée dans l'inventaire.");
       await load(search);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Impossible de modifier l'inventaire.");
     } finally {
       setSaving(false);
     }
+  };
+
+  const uploadInvoice = async () => {
+    if (!invoiceFile) {
+      setNotice("Choisissez une facture PDF avant de la téléverser.");
+      return;
+    }
+    setUploadingInvoice(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", invoiceFile);
+      const response = await fetch("/api/invoice-documents", { method: "POST", body: formData });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Impossible de téléverser la facture.");
+      setInvoiceDocument(payload.document);
+      setNotice("Facture PDF téléversée. Révisez les lignes ci-dessous : le stock ne changera qu'après confirmation.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Impossible de téléverser la facture.");
+    } finally {
+      setUploadingInvoice(false);
+    }
+  };
+
+  const updateReceiptLine = (index: number, key: keyof ReceiptLine, value: string) => {
+    setReceiptLines((current) => current.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: ["quantity", "unitCost"].includes(key) ? Number(value) || 0 : value } : line));
   };
 
   return (
@@ -290,22 +334,37 @@ export default function InventoryWorkspace() {
               <div><p className="eyebrow">Mouvement d'inventaire</p><h2>{workflow === "receipt" ? "Entrée d'inventaire" : "Sortie d'inventaire"}</h2></div>
               <button className="close" onClick={() => setWorkflow(null)}>×</button>
             </div>
-            <p className="workflow-intro">{workflow === "receipt" ? "Ajoutez une ligne de facture, sa quantité, son prix coûtant et l'emplacement où la pièce est rangée." : "Enregistrez toute pièce qui sort de l'inventaire. La quantité ne peut pas descendre sous zéro."}</p>
+            <p className="workflow-intro">{workflow === "receipt" ? "Téléversez une facture PDF ou ajoutez les lignes manuellement. Vérifiez les quantités, coûts et emplacements : rien ne change en inventaire avant votre confirmation." : "Enregistrez toute pièce qui sort de l'inventaire. La quantité ne peut pas descendre sous zéro."}</p>
             <form onSubmit={saveMovement}>
-              <div className="form-grid">
+              {workflow === "receipt" ? <>
+                <section className="invoice-upload" aria-label="Facture PDF">
+                  <div><strong>Facture fournisseur (PDF)</strong><p>Téléversement sécurisé, suivi d'une révision manuelle.</p></div>
+                  <input type="file" accept="application/pdf,.pdf" onChange={(event) => setInvoiceFile(event.target.files?.[0] ?? null)} aria-label="Choisir une facture PDF" />
+                  <button type="button" className="secondary" disabled={!invoiceFile || uploadingInvoice || Boolean(invoiceDocument)} onClick={uploadInvoice}>{uploadingInvoice ? "Téléversement…" : invoiceDocument ? "PDF téléversé" : "Téléverser le PDF"}</button>
+                </section>
+                {invoiceDocument && <p className="review-status"><strong>PDF prêt à réviser :</strong> {invoiceDocument.fileName}. Ajoutez ou corrigez les lignes avant de confirmer.</p>}
+                <div className="receipt-meta"><Field label="No facture" value={movement.invoiceNumber} onChange={(value) => setMovement((current) => ({ ...current, invoiceNumber: value }))} /></div>
+                <div className="receipt-lines" aria-label="Lignes à réviser">
+                  <div className="receipt-lines-heading"><div><strong>Révision des lignes</strong><span>Chaque ligne requiert un emplacement.</span></div><button type="button" className="secondary" onClick={() => setReceiptLines((current) => [...current, emptyReceiptLine()])}>+ Ajouter une ligne</button></div>
+                  {receiptLines.map((line, index) => <div className="receipt-line" key={index}>
+                    <label className="field"><span>No produit</span><input list="product-numbers" value={line.legacyReference} required placeholder="Ex. 2344" onChange={(event) => updateReceiptLine(index, "legacyReference", event.target.value)} /></label>
+                    <Field label="Qte. reçue" type="number" value={line.quantity} onChange={(value) => updateReceiptLine(index, "quantity", value)} required />
+                    <Field label="Emplacement" value={line.location} onChange={(value) => updateReceiptLine(index, "location", value)} required />
+                    <Field label="Fournisseur" value={line.supplierName} onChange={(value) => updateReceiptLine(index, "supplierName", value)} />
+                    <Field label="Prix coûtant unitaire (CAD)" type="number" value={line.unitCost} onChange={(value) => updateReceiptLine(index, "unitCost", value)} />
+                    <button type="button" className="remove-line" disabled={receiptLines.length === 1} onClick={() => setReceiptLines((current) => current.filter((_, lineIndex) => lineIndex !== index))}>Retirer</button>
+                  </div>)}
+                  <datalist id="product-numbers">{items.map((item) => <option key={item.id} value={item.legacyReference}>{item.description}</option>)}</datalist>
+                </div>
+              </> : <div className="form-grid">
                 <label className="field"><span>No produit</span><input list="product-numbers" value={movement.legacyReference} required placeholder="Ex. 2344" onChange={(event) => setMovement((current) => ({ ...current, legacyReference: event.target.value }))} /><datalist id="product-numbers">{items.map((item) => <option key={item.id} value={item.legacyReference}>{item.description}</option>)}</datalist></label>
-                <Field label={workflow === "receipt" ? "Qte. reçue" : "Qte. sortie"} type="number" value={movement.quantity} onChange={(value) => setMovement((current) => ({ ...current, quantity: Number(value) || 0 }))} required />
-                {workflow === "receipt" ? <>
-                  <Field label="Emplacement (requis)" value={movement.location} onChange={(value) => setMovement((current) => ({ ...current, location: value }))} required />
-                  <Field label="No facture" value={movement.invoiceNumber} onChange={(value) => setMovement((current) => ({ ...current, invoiceNumber: value }))} />
-                  <Field label="Fournisseur" value={movement.supplierName} onChange={(value) => setMovement((current) => ({ ...current, supplierName: value }))} />
-                  <Field label="Prix coûtant unitaire (CAD)" type="number" value={movement.unitCost} onChange={(value) => setMovement((current) => ({ ...current, unitCost: Number(value) || 0 }))} />
-                </> : <>
+                <Field label="Qte. sortie" type="number" value={movement.quantity} onChange={(value) => setMovement((current) => ({ ...current, quantity: Number(value) || 0 }))} required />
+                <>
                   <label className="field"><span>Raison</span><select value={movement.reason} onChange={(event) => setMovement((current) => ({ ...current, reason: event.target.value }))}><option>Utilisée / Used</option><option>Casse / Broken</option><option>Ajustement / Adjustment</option></select></label>
                   <Field label="Note (facultatif)" value={movement.note} onChange={(value) => setMovement((current) => ({ ...current, note: value }))} />
-                </>}
-              </div>
-              <div className="form-actions"><button type="button" className="secondary" onClick={() => setWorkflow(null)}>Annuler</button><button className={workflow === "issue" ? "issue-button" : "primary"} disabled={saving}>{saving ? "Sauvegarde…" : workflow === "receipt" ? "Ajouter à l'inventaire" : "Confirmer la sortie"}</button></div>
+                </>
+              </div>}
+              <div className="form-actions"><button type="button" className="secondary" onClick={() => setWorkflow(null)}>Annuler</button><button className={workflow === "issue" ? "issue-button" : "primary"} disabled={saving}>{saving ? "Sauvegarde…" : workflow === "receipt" ? "Confirmer l'entrée en inventaire" : "Confirmer la sortie"}</button></div>
             </form>
           </section>
         </div>
