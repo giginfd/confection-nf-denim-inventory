@@ -55,6 +55,17 @@ export default worker;
 
 type D1Row = Record<string, unknown>;
 
+const inventorySortColumns: Record<string, string> = {
+  legacyReference: "legacy_reference",
+  supplierPartNumber: "supplier_part_number",
+  description: "description",
+  machineModel: "machine_model",
+  location: "location",
+  quantityOnHand: "quantity_on_hand",
+  supplierName: "supplier_name",
+  lastCost: "last_cost",
+};
+
 const initializeStatements = [
   `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_reference TEXT NOT NULL UNIQUE, supplier_part_number TEXT NOT NULL DEFAULT '', supplier_category_code TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL, quantity_on_hand REAL NOT NULL DEFAULT 0, last_cost REAL NOT NULL DEFAULT 0, average_cost REAL NOT NULL DEFAULT 0, dealer_price REAL NOT NULL DEFAULT 0, sale_price REAL NOT NULL DEFAULT 0, location TEXT NOT NULL DEFAULT '', machine_model TEXT NOT NULL DEFAULT '', cost_unit TEXT NOT NULL DEFAULT '', detail_unit TEXT NOT NULL DEFAULT '', legacy_raw_data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS inventory_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, change_type TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
@@ -95,9 +106,11 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/inventory" && request.method === "GET") {
     const search = url.searchParams.get("search")?.trim() ?? "";
     const term = `%${search}%`;
+    const sortColumn = inventorySortColumns[url.searchParams.get("sort") ?? ""] ?? "description";
+    const direction = url.searchParams.get("direction") === "desc" ? "DESC" : "ASC";
     const records = search
-      ? await env.DB.prepare(`SELECT * FROM inventory_items WHERE legacy_reference LIKE ? OR supplier_part_number LIKE ? OR description LIKE ? OR supplier_name LIKE ? OR location LIKE ? OR machine_model LIKE ? ORDER BY description LIMIT 500`).bind(term, term, term, term, term, term).all<D1Row>()
-      : await env.DB.prepare("SELECT * FROM inventory_items ORDER BY description LIMIT 500").all<D1Row>();
+      ? await env.DB.prepare(`SELECT * FROM inventory_items WHERE legacy_reference LIKE ? OR supplier_part_number LIKE ? OR description LIKE ? OR supplier_name LIKE ? OR location LIKE ? OR machine_model LIKE ? ORDER BY ${sortColumn} ${direction}, id ASC LIMIT 500`).bind(term, term, term, term, term, term).all<D1Row>()
+      : await env.DB.prepare(`SELECT * FROM inventory_items ORDER BY ${sortColumn} ${direction}, id ASC LIMIT 500`).all<D1Row>();
     const totals = await env.DB.prepare("SELECT COUNT(*) AS product_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand, COALESCE(SUM(CASE WHEN quantity_on_hand = 0 THEN 1 ELSE 0 END), 0) AS zero_stock_count, COUNT(DISTINCT supplier_name) AS supplier_count, COALESCE(SUM(CASE WHEN quantity_on_hand > 0 THEN quantity_on_hand * last_cost ELSE 0 END), 0) AS inventory_value_at_last_cost FROM inventory_items").first<D1Row>();
     return json({ items: records.results.map(item), summary: { productCount: Number(totals?.product_count ?? 0), unitsOnHand: Number(totals?.units_on_hand ?? 0), zeroStockCount: Number(totals?.zero_stock_count ?? 0), supplierCount: Number(totals?.supplier_count ?? 0), inventoryValueAtLastCost: Number(totals?.inventory_value_at_last_cost ?? 0) } });
   }

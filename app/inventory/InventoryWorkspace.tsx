@@ -6,6 +6,19 @@ import AppNavigation from "../components/AppNavigation";
 
 type FormValues = Omit<InventoryItem, "id" | "createdAt" | "updatedAt">;
 type Workflow = "receipt" | "issue" | null;
+type InventorySortKey = "legacyReference" | "supplierPartNumber" | "description" | "machineModel" | "location" | "quantityOnHand" | "supplierName" | "lastCost";
+type SortDirection = "asc" | "desc";
+
+const sortableColumns: Array<{ key: InventorySortKey; label: string }> = [
+  { key: "legacyReference", label: "NO. PRODUIT" },
+  { key: "supplierPartNumber", label: "NO. PIÈCE FOURNISSEUR" },
+  { key: "description", label: "DESCRIPTION" },
+  { key: "machineModel", label: "MACHINE / MODÈLE" },
+  { key: "location", label: "EMPLA." },
+  { key: "quantityOnHand", label: "QTE" },
+  { key: "supplierName", label: "FOURNISSEUR" },
+  { key: "lastCost", label: "DERNIER COÛT" },
+];
 
 type MovementValues = {
   legacyReference: string;
@@ -71,6 +84,8 @@ export default function InventoryWorkspace() {
   const [summary, setSummary] = useState<InventorySummary | null>(null);
   const [activity, setActivity] = useState<InventoryChange[]>([]);
   const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<InventorySortKey>("description");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [selected, setSelected] = useState<InventoryItem | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<FormValues>(emptyForm);
@@ -84,10 +99,10 @@ export default function InventoryWorkspace() {
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [uploadingInvoice, setUploadingInvoice] = useState(false);
 
-  const load = async (term = "") => {
+  const load = async (term = "", requestedSort = sortKey, requestedDirection = sortDirection) => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/inventory?search=${encodeURIComponent(term)}`);
+      const response = await fetch(`/api/inventory?search=${encodeURIComponent(term)}&sort=${requestedSort}&direction=${requestedDirection}`);
       if (!response.ok) throw new Error("Could not load inventory");
       const payload = await response.json();
       setItems(payload.items);
@@ -109,7 +124,7 @@ export default function InventoryWorkspace() {
   useEffect(() => {
     const timer = window.setTimeout(() => void load(search), 220);
     return () => window.clearTimeout(timer);
-  }, [search]);
+  }, [search, sortKey, sortDirection]);
 
   const formTitle = creating ? "Nouvelle fiche produit / New product record" : `Modifier / Edit ${selected?.legacyReference ?? "part"}`;
   const displayedItems = useMemo(() => items.slice(0, 80), [items]);
@@ -227,6 +242,11 @@ export default function InventoryWorkspace() {
     setReceiptLines((current) => current.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: ["quantity", "unitCost"].includes(key) ? Number(value) || 0 : value } : line));
   };
 
+  const toggleSort = (nextKey: InventorySortKey) => {
+    if (nextKey === sortKey) setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    else { setSortKey(nextKey); setSortDirection("asc"); }
+  };
+
   return (
     <main className="shell">
       <AppNavigation active="inventory" />
@@ -271,7 +291,11 @@ export default function InventoryWorkspace() {
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>NO. PRODUIT</th><th>NO. PIÈCE FOURNISSEUR</th><th>DESCRIPTION</th><th>MACHINE / MODÈLE</th><th>EMPLA.</th><th>QTE</th><th>FOURNISSEUR</th><th>DERNIER COÛT</th></tr></thead>
+              <thead><tr>{sortableColumns.map((column) => {
+                const active = column.key === sortKey;
+                const direction = active ? sortDirection === "asc" ? "ascending" : "descending" : "none";
+                return <th key={column.key} aria-sort={direction}><button type="button" className={`sort-button ${active ? "active" : ""}`} onClick={() => toggleSort(column.key)}>{column.label}<span aria-hidden="true">{active ? sortDirection === "asc" ? " ↑" : " ↓" : " ↕"}</span></button></th>;
+              })}</tr></thead>
               <tbody>
                 {displayedItems.map((item) => (
                   <tr key={item.id} onClick={() => openEdit(item)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && openEdit(item)}>
