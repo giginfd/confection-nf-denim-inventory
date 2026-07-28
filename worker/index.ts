@@ -81,6 +81,10 @@ const initializeStatements = [
 
 async function initialize(db: D1Database) {
   await db.batch(initializeStatements.map((statement) => db.prepare(statement)));
+  const supplierPartNumberColumn = await db.prepare("SELECT name FROM pragma_table_info('inventory_items') WHERE name = ?").bind("supplier_part_number").first<D1Row>();
+  if (!supplierPartNumberColumn) {
+    await db.prepare("ALTER TABLE inventory_items ADD COLUMN supplier_part_number TEXT NOT NULL DEFAULT ''").run();
+  }
   const result = await db.prepare("SELECT COUNT(*) AS count FROM inventory_items").first<{ count: number }>();
   if ((result?.count ?? 0) > 0) return;
   for (let offset = 0; offset < inventorySeed.length; offset += 100) {
