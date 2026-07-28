@@ -23,6 +23,7 @@ export type InventorySummary = {
   unitsOnHand: number;
   zeroStockCount: number;
   supplierCount: number;
+  inventoryValueAtLastCost: number;
 };
 
 export type InventoryChange = {

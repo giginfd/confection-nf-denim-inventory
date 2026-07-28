@@ -96,8 +96,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const records = search
       ? await env.DB.prepare(`SELECT * FROM inventory_items WHERE legacy_reference LIKE ? OR description LIKE ? OR supplier_name LIKE ? OR location LIKE ? OR machine_model LIKE ? ORDER BY description LIMIT 500`).bind(term, term, term, term, term).all<D1Row>()
       : await env.DB.prepare("SELECT * FROM inventory_items ORDER BY description LIMIT 500").all<D1Row>();
-    const totals = await env.DB.prepare("SELECT COUNT(*) AS product_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand, COALESCE(SUM(CASE WHEN quantity_on_hand = 0 THEN 1 ELSE 0 END), 0) AS zero_stock_count, COUNT(DISTINCT supplier_name) AS supplier_count FROM inventory_items").first<D1Row>();
-    return json({ items: records.results.map(item), summary: { productCount: Number(totals?.product_count ?? 0), unitsOnHand: Number(totals?.units_on_hand ?? 0), zeroStockCount: Number(totals?.zero_stock_count ?? 0), supplierCount: Number(totals?.supplier_count ?? 0) } });
+    const totals = await env.DB.prepare("SELECT COUNT(*) AS product_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand, COALESCE(SUM(CASE WHEN quantity_on_hand = 0 THEN 1 ELSE 0 END), 0) AS zero_stock_count, COUNT(DISTINCT supplier_name) AS supplier_count, COALESCE(SUM(CASE WHEN quantity_on_hand > 0 THEN quantity_on_hand * last_cost ELSE 0 END), 0) AS inventory_value_at_last_cost FROM inventory_items").first<D1Row>();
+    return json({ items: records.results.map(item), summary: { productCount: Number(totals?.product_count ?? 0), unitsOnHand: Number(totals?.units_on_hand ?? 0), zeroStockCount: Number(totals?.zero_stock_count ?? 0), supplierCount: Number(totals?.supplier_count ?? 0), inventoryValueAtLastCost: Number(totals?.inventory_value_at_last_cost ?? 0) } });
   }
   if (url.pathname === "/api/activity" && request.method === "GET") {
     const changes = await env.DB.prepare("SELECT * FROM inventory_changes ORDER BY id DESC LIMIT 12").all<D1Row>();
@@ -117,8 +117,17 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 }
 
 async function listLocations(db: D1Database) {
-  const rows = await db.prepare("SELECT location, COUNT(*) AS part_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand FROM inventory_items WHERE location <> '' GROUP BY location ORDER BY location").all<D1Row>();
-  return json({ locations: rows.results.map((row) => ({ location: String(row.location), partCount: Number(row.part_count), unitsOnHand: Number(row.units_on_hand) })) });
+  const rows = await db.prepare("SELECT location, legacy_reference, description, quantity_on_hand, last_cost, machine_model FROM inventory_items WHERE location <> '' ORDER BY location, description").all<D1Row>();
+  const grouped = new Map<string, { location: string; partCount: number; unitsOnHand: number; items: Array<{ legacyReference: string; description: string; quantityOnHand: number; lastCost: number; machineModel: string }> }>();
+  for (const row of rows.results) {
+    const location = String(row.location);
+    const entry = grouped.get(location) ?? { location, partCount: 0, unitsOnHand: 0, items: [] };
+    entry.partCount += 1;
+    entry.unitsOnHand += Number(row.quantity_on_hand);
+    entry.items.push({ legacyReference: String(row.legacy_reference), description: String(row.description), quantityOnHand: Number(row.quantity_on_hand), lastCost: Number(row.last_cost), machineModel: String(row.machine_model) });
+    grouped.set(location, entry);
+  }
+  return json({ locations: [...grouped.values()] });
 }
 
 async function locationContents(db: D1Database, location: string) {

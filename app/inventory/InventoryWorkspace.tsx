@@ -242,6 +242,7 @@ export default function InventoryWorkspace() {
       <section className="metrics" aria-label="Inventory summary">
         <Metric label="No produit / Product no." value={summary?.productCount.toLocaleString() ?? "—"} detail="fiches de pièces actuelles" />
         <Metric label="Qte. en inventaire" value={summary?.unitsOnHand.toLocaleString() ?? "—"} detail="unités dans toutes les pièces" />
+        <Metric label="Valeur de l'inventaire" value={summary ? money(summary.inventoryValueAtLastCost) : "—"} detail="au dernier prix coûtant connu" />
         <Metric label="À zéro / Zero stock" value={summary?.zeroStockCount.toLocaleString() ?? "—"} detail="pièces à vérifier" warning />
         <Metric label="Fournisseurs / Suppliers" value={summary?.supplierCount.toLocaleString() ?? "—"} detail="catégories dans l'inventaire" />
       </section>
