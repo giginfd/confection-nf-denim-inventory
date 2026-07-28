@@ -24,6 +24,7 @@ export type InventorySummary = {
   unitsOnHand: number;
   zeroStockCount: number;
   supplierCount: number;
+  supplierPartNumberCount: number;
   inventoryValueAtLastCost: number;
 };
 

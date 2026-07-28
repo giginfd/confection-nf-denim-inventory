@@ -128,6 +128,7 @@ export default function InventoryWorkspace() {
 
   const formTitle = creating ? "Nouvelle fiche produit / New product record" : `Modifier / Edit ${selected?.legacyReference ?? "part"}`;
   const displayedItems = useMemo(() => items.slice(0, 80), [items]);
+  const visibleSortableColumns = useMemo(() => summary?.supplierPartNumberCount ? sortableColumns : sortableColumns.filter((column) => column.key !== "supplierPartNumber"), [summary?.supplierPartNumberCount]);
 
   const openEdit = (item: InventoryItem) => {
     setCreating(false);
@@ -291,7 +292,7 @@ export default function InventoryWorkspace() {
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr>{sortableColumns.map((column) => {
+              <thead><tr>{visibleSortableColumns.map((column) => {
                 const active = column.key === sortKey;
                 const direction = active ? sortDirection === "asc" ? "ascending" : "descending" : "none";
                 return <th key={column.key} aria-sort={direction}><button type="button" className={`sort-button ${active ? "active" : ""}`} onClick={() => toggleSort(column.key)}>{column.label}<span aria-hidden="true">{active ? sortDirection === "asc" ? " ↑" : " ↓" : " ↕"}</span></button></th>;
@@ -300,7 +301,7 @@ export default function InventoryWorkspace() {
                 {displayedItems.map((item) => (
                   <tr key={item.id} onClick={() => openEdit(item)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && openEdit(item)}>
                     <td className="sku">{item.legacyReference}</td>
-                    <td className="sku">{item.supplierPartNumber || <span className="muted">—</span>}</td>
+                    {summary?.supplierPartNumberCount ? <td className="sku">{item.supplierPartNumber || <span className="muted">—</span>}</td> : null}
                     <td><strong>{item.description}</strong></td>
                     <td>{item.machineModel || <span className="muted">—</span>}</td>
                     <td>{item.location || <span className="muted">—</span>}</td>
