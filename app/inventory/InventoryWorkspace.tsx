@@ -146,8 +146,8 @@ export default function InventoryWorkspace() {
       {notice && <div className="notice" role="status">{notice}</div>}
 
       <section className="metrics" aria-label="Inventory summary">
-        <Metric label="Produits / Products" value={summary?.productCount.toLocaleString() ?? "—"} detail="fiches de pièces actuelles" />
-        <Metric label="En stock / On hand" value={summary?.unitsOnHand.toLocaleString() ?? "—"} detail="unités dans toutes les pièces" />
+        <Metric label="No produit / Product no." value={summary?.productCount.toLocaleString() ?? "—"} detail="fiches de pièces actuelles" />
+        <Metric label="Qte. en inventaire" value={summary?.unitsOnHand.toLocaleString() ?? "—"} detail="unités dans toutes les pièces" />
         <Metric label="À zéro / Zero stock" value={summary?.zeroStockCount.toLocaleString() ?? "—"} detail="pièces à vérifier" warning />
         <Metric label="Fournisseurs / Suppliers" value={summary?.supplierCount.toLocaleString() ?? "—"} detail="catégories dans l'inventaire" />
       </section>
@@ -170,7 +170,7 @@ export default function InventoryWorkspace() {
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Référence / SKU</th><th>Pièce / Part</th><th>En stock</th><th>Emplacement</th><th>Fournisseur</th><th>Dernier coût</th></tr></thead>
+              <thead><tr><th>No produit</th><th>Desc/Produit</th><th>Qte. en inventaire</th><th>Emplacement</th><th>Fournisseur</th><th>Prix coûtant</th></tr></thead>
               <tbody>
                 {displayedItems.map((item) => (
                   <tr key={item.id} onClick={() => openEdit(item)} tabIndex={0} onKeyDown={(event) => event.key === "Enter" && openEdit(item)}>
@@ -210,18 +210,18 @@ export default function InventoryWorkspace() {
             <div className="editor-heading"><div><p className="eyebrow">Inventory record</p><h2>{formTitle}</h2></div><button className="close" onClick={() => { setSelected(null); setCreating(false); }}>×</button></div>
             <form onSubmit={save}>
               <div className="form-grid">
-                <Field label="Référence / SKU" value={form.legacyReference} onChange={(value) => updateField("legacyReference", value)} required />
-                <Field label="Description / Description" value={form.description} onChange={(value) => updateField("description", value)} required />
-                <Field label="Quantité en stock / On hand" type="number" value={form.quantityOnHand} onChange={(value) => updateField("quantityOnHand", value)} />
+                <Field label="No produit / Product no." value={form.legacyReference} onChange={(value) => updateField("legacyReference", value)} required />
+                <Field label="Desc/Produit" value={form.description} onChange={(value) => updateField("description", value)} required />
+                <Field label="Qte. en inventaire" type="number" value={form.quantityOnHand} onChange={(value) => updateField("quantityOnHand", value)} />
                 <Field label="Emplacement / Location" value={form.location} onChange={(value) => updateField("location", value)} />
                 <Field label="Fournisseur / Supplier" value={form.supplierName} onChange={(value) => updateField("supplierName", value)} />
-                <Field label="Catégorie fournisseur / Supplier category" value={form.supplierCategoryCode} onChange={(value) => updateField("supplierCategoryCode", value)} />
+                <Field label="Code fournisseur / Supplier code" value={form.supplierCategoryCode} onChange={(value) => updateField("supplierCategoryCode", value)} />
                 <Field label="Modèle de machine / Machine model" value={form.machineModel} onChange={(value) => updateField("machineModel", value)} />
-                <Field label="Dernier coût / Last cost (CAD)" type="number" value={form.lastCost} onChange={(value) => updateField("lastCost", value)} />
-                <Field label="Coût moyen / Average cost (CAD)" type="number" value={form.averageCost} onChange={(value) => updateField("averageCost", value)} />
-                <Field label="Prix de vente / Sale price (CAD)" type="number" value={form.salePrice} onChange={(value) => updateField("salePrice", value)} />
-                <Field label="Unité coût / Cost unit" value={form.costUnit} onChange={(value) => updateField("costUnit", value)} />
-                <Field label="Unité détail / Detail unit" value={form.detailUnit} onChange={(value) => updateField("detailUnit", value)} />
+                <Field label="Prix coûtant (CAD)" type="number" value={form.lastCost} onChange={(value) => updateField("lastCost", value)} />
+                <Field label="Divers (hérité)" type="number" value={form.averageCost} onChange={(value) => updateField("averageCost", value)} />
+                <Field label="Prix de vente (CAD)" type="number" value={form.dealerPrice} onChange={(value) => updateField("dealerPrice", value)} />
+                <Field label="Unité mesure coûtant" value={form.costUnit} onChange={(value) => updateField("costUnit", value)} />
+                <Field label="Unité mesure détail" value={form.detailUnit} onChange={(value) => updateField("detailUnit", value)} />
               </div>
               <div className="form-actions"><button type="button" className="secondary" onClick={() => { setSelected(null); setCreating(false); }}>Annuler / Cancel</button><button className="primary" disabled={saving}>{saving ? "Sauvegarde…" : creating ? "Ajouter la pièce" : "Sauvegarder"}</button></div>
             </form>
