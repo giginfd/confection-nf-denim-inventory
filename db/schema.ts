@@ -59,3 +59,18 @@ export const invoiceDocuments = sqliteTable("invoice_documents", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   confirmedAt: text("confirmed_at"),
 });
+
+export const marketOffers = sqliteTable("market_offers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  inventoryId: integer("inventory_id").notNull(),
+  legacyReference: text("legacy_reference").notNull(),
+  sourceName: text("source_name").notNull(),
+  listingUrl: text("listing_url").notNull(),
+  price: real("price").notNull(),
+  currency: text("currency").notNull(),
+  availability: text("availability").notNull().default("unknown"),
+  matchStatus: text("match_status").notNull().default("possible"),
+  note: text("note").notNull().default(""),
+  checkedAt: text("checked_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

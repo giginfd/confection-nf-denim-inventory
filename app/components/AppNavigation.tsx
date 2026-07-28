@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-export default function AppNavigation({ active }: { active: "inventory" | "locations" }) {
+export default function AppNavigation({ active }: { active: "inventory" | "locations" | "pricing" }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
@@ -24,6 +24,7 @@ export default function AppNavigation({ active }: { active: "inventory" | "locat
       <div className="nav-links">
         <a className={active === "inventory" ? "active" : ""} href="/">Inventaire</a>
         <a className={active === "locations" ? "active" : ""} href="/emplacements">Plan des emplacements</a>
+        <a className={active === "pricing" ? "active" : ""} href="/prix-disponibilite">Prix & disponibilité</a>
       </div>
     </nav>
   );

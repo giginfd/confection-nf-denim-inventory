@@ -60,10 +60,12 @@ const initializeStatements = [
   `CREATE TABLE IF NOT EXISTS inventory_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, change_type TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_delta REAL NOT NULL, quantity_before REAL NOT NULL, quantity_after REAL NOT NULL, location TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', invoice_number TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS invoice_documents (id TEXT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, file_name TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/pdf', size_bytes INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'uploaded', invoice_number TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS market_offers (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, source_name TEXT NOT NULL, listing_url TEXT NOT NULL, price REAL NOT NULL, currency TEXT NOT NULL, availability TEXT NOT NULL DEFAULT 'unknown', match_status TEXT NOT NULL DEFAULT 'possible', note TEXT NOT NULL DEFAULT '', checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE INDEX IF NOT EXISTS inventory_items_description_idx ON inventory_items(description)`,
   `CREATE INDEX IF NOT EXISTS inventory_changes_created_idx ON inventory_changes(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS stock_movements_inventory_idx ON stock_movements(inventory_id)`,
   `CREATE INDEX IF NOT EXISTS invoice_documents_created_idx ON invoice_documents(created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS market_offers_inventory_idx ON market_offers(inventory_id, checked_at DESC)`,
 ];
 
 async function initialize(db: D1Database) {
@@ -110,6 +112,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/receipts" && request.method === "POST") return receiveStock(request, env.DB);
   if (url.pathname === "/api/receipts/batch" && request.method === "POST") return receiveStockBatch(request, env.DB);
   if (url.pathname === "/api/invoice-documents" && request.method === "POST") return uploadInvoiceDocument(request, env);
+  if (url.pathname === "/api/market-offers" && request.method === "GET") return listMarketOffers(env.DB);
+  if (url.pathname === "/api/market-offers" && request.method === "POST") return createMarketOffer(request, env.DB);
   if (url.pathname === "/api/issues" && request.method === "POST") return issueStock(request, env.DB);
   const match = url.pathname.match(/^\/api\/inventory\/(\d+)$/);
   if (match && request.method === "PATCH") return updateItem(request, env.DB, Number(match[1]));
@@ -137,6 +141,36 @@ async function locationContents(db: D1Database, location: string) {
 
 function text(value: unknown) { return typeof value === "string" ? value.trim() : ""; }
 function number(value: unknown) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; }
+
+function externalUrl(value: unknown) {
+  const candidate = text(value);
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : "";
+  } catch { return ""; }
+}
+
+async function listMarketOffers(db: D1Database) {
+  const rows = await db.prepare("SELECT * FROM market_offers ORDER BY checked_at DESC, id DESC").all<D1Row>();
+  return json({ offers: rows.results.map((row) => ({ id: Number(row.id), inventoryId: Number(row.inventory_id), legacyReference: String(row.legacy_reference), sourceName: String(row.source_name), listingUrl: String(row.listing_url), price: Number(row.price), currency: String(row.currency), availability: String(row.availability), matchStatus: String(row.match_status), note: String(row.note), checkedAt: String(row.checked_at), createdAt: String(row.created_at) })) });
+}
+
+async function createMarketOffer(request: Request, db: D1Database) {
+  const body = await request.json<Record<string, unknown>>();
+  const inventoryId = number(body.inventoryId);
+  const sourceName = text(body.sourceName);
+  const listingUrl = externalUrl(body.listingUrl);
+  const price = number(body.price);
+  const currency = text(body.currency).toUpperCase();
+  const availability = text(body.availability) || "unknown";
+  const matchStatus = text(body.matchStatus) || "possible";
+  if (!inventoryId || !sourceName || !listingUrl || price < 0 || !currency) return json({ error: "Source, lien, prix et devise sont requis." }, 400);
+  const item = await db.prepare("SELECT legacy_reference FROM inventory_items WHERE id = ?").bind(inventoryId).first<D1Row>();
+  if (!item) return json({ error: "Cette pièce est introuvable." }, 404);
+  const result = await db.prepare("INSERT INTO market_offers (inventory_id, legacy_reference, source_name, listing_url, price, currency, availability, match_status, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(inventoryId, item.legacy_reference, sourceName, listingUrl, price, currency, availability, matchStatus, text(body.note)).run();
+  return json({ ok: true, id: Number(result.meta.last_row_id) }, 201);
+}
 
 async function createItem(request: Request, db: D1Database) {
   const body = await request.json<Record<string, unknown>>();
