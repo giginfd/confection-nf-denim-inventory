@@ -30,3 +30,19 @@ export const inventoryChanges = sqliteTable("inventory_changes", {
   note: text("note").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const stockMovements = sqliteTable("stock_movements", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  inventoryId: integer("inventory_id").notNull(),
+  legacyReference: text("legacy_reference").notNull(),
+  description: text("description").notNull(),
+  movementType: text("movement_type").notNull(),
+  quantityDelta: real("quantity_delta").notNull(),
+  quantityBefore: real("quantity_before").notNull(),
+  quantityAfter: real("quantity_after").notNull(),
+  location: text("location").notNull().default(""),
+  supplierName: text("supplier_name").notNull().default(""),
+  invoiceNumber: text("invoice_number").notNull().default(""),
+  note: text("note").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

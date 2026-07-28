@@ -57,8 +57,10 @@ type D1Row = Record<string, unknown>;
 const initializeStatements = [
   `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_reference TEXT NOT NULL UNIQUE, supplier_category_code TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL, quantity_on_hand REAL NOT NULL DEFAULT 0, last_cost REAL NOT NULL DEFAULT 0, average_cost REAL NOT NULL DEFAULT 0, dealer_price REAL NOT NULL DEFAULT 0, sale_price REAL NOT NULL DEFAULT 0, location TEXT NOT NULL DEFAULT '', machine_model TEXT NOT NULL DEFAULT '', cost_unit TEXT NOT NULL DEFAULT '', detail_unit TEXT NOT NULL DEFAULT '', legacy_raw_data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS inventory_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, change_type TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS stock_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_delta REAL NOT NULL, quantity_before REAL NOT NULL, quantity_after REAL NOT NULL, location TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', invoice_number TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE INDEX IF NOT EXISTS inventory_items_description_idx ON inventory_items(description)`,
   `CREATE INDEX IF NOT EXISTS inventory_changes_created_idx ON inventory_changes(created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS stock_movements_inventory_idx ON stock_movements(inventory_id)`,
 ];
 
 async function initialize(db: D1Database) {
@@ -99,6 +101,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return json({ activity: changes.results.map((row) => ({ id: Number(row.id), inventoryId: Number(row.inventory_id), legacyReference: String(row.legacy_reference), description: String(row.description), changeType: String(row.change_type), note: String(row.note), createdAt: String(row.created_at) })) });
   }
   if (url.pathname === "/api/inventory" && request.method === "POST") return createItem(request, env.DB);
+  if (url.pathname === "/api/receipts" && request.method === "POST") return receiveStock(request, env.DB);
+  if (url.pathname === "/api/issues" && request.method === "POST") return issueStock(request, env.DB);
   const match = url.pathname.match(/^\/api\/inventory\/(\d+)$/);
   if (match && request.method === "PATCH") return updateItem(request, env.DB, Number(match[1]));
   return json({ error: "Not found" }, 404);
@@ -134,4 +138,45 @@ async function updateItem(request: Request, db: D1Database, id: number) {
     await db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(id, reference, description, "Pièce mise à jour / Part updated", "Champs sauvegardés dans l'inventaire / Fields saved in inventory").run();
     return json({ ok: true });
   } catch { return json({ error: "That SKU already exists." }, 409); }
+}
+
+async function receiveStock(request: Request, db: D1Database) {
+  const body = await request.json<Record<string, unknown>>();
+  const reference = text(body.legacyReference);
+  const location = text(body.location);
+  const quantity = number(body.quantity);
+  if (!reference || !location || quantity <= 0) return json({ error: "No produit, quantité et emplacement sont requis." }, 400);
+  const current = await db.prepare("SELECT * FROM inventory_items WHERE legacy_reference = ?").bind(reference).first<D1Row>();
+  if (!current) return json({ error: "Ce No produit est introuvable. Ajoutez la pièce avant de la recevoir." }, 404);
+  const before = Number(current.quantity_on_hand);
+  const after = before + quantity;
+  const supplier = text(body.supplierName) || String(current.supplier_name);
+  const invoice = text(body.invoiceNumber);
+  const unitCost = number(body.unitCost);
+  await db.batch([
+    db.prepare("UPDATE inventory_items SET quantity_on_hand = ?, location = ?, supplier_name = ?, last_cost = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(after, location, supplier, unitCost, current.id),
+    db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(current.id, reference, current.description, "Réception fournisseur / Supplier receipt", quantity, before, after, location, supplier, invoice, "Facture reçue / Invoice received"),
+    db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(current.id, reference, current.description, "Réception fournisseur", `+${quantity} · ${location}${invoice ? ` · Facture ${invoice}` : ""}`),
+  ]);
+  return json({ ok: true, quantityAfter: after });
+}
+
+async function issueStock(request: Request, db: D1Database) {
+  const body = await request.json<Record<string, unknown>>();
+  const reference = text(body.legacyReference);
+  const quantity = number(body.quantity);
+  const reason = text(body.reason) || "Utilisée / Used";
+  const note = text(body.note);
+  if (!reference || quantity <= 0) return json({ error: "No produit et quantité sont requis." }, 400);
+  const current = await db.prepare("SELECT * FROM inventory_items WHERE legacy_reference = ?").bind(reference).first<D1Row>();
+  if (!current) return json({ error: "Ce No produit est introuvable." }, 404);
+  const before = Number(current.quantity_on_hand);
+  if (quantity > before) return json({ error: `Quantité insuffisante : ${before} en inventaire.` }, 400);
+  const after = before - quantity;
+  await db.batch([
+    db.prepare("UPDATE inventory_items SET quantity_on_hand = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(after, current.id),
+    db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(current.id, reference, current.description, reason, -quantity, before, after, current.location, current.supplier_name, "", note),
+    db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(current.id, reference, current.description, reason, `-${quantity}${note ? ` · ${note}` : ""}`),
+  ]);
+  return json({ ok: true, quantityAfter: after });
 }

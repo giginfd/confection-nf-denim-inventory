@@ -4,6 +4,18 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { InventoryChange, InventoryItem, InventorySummary } from "../lib/inventory-types";
 
 type FormValues = Omit<InventoryItem, "id" | "createdAt" | "updatedAt">;
+type Workflow = "receipt" | "issue" | null;
+
+type MovementValues = {
+  legacyReference: string;
+  quantity: number;
+  location: string;
+  supplierName: string;
+  invoiceNumber: string;
+  unitCost: number;
+  reason: string;
+  note: string;
+};
 
 const emptyForm: FormValues = {
   legacyReference: "",
@@ -19,6 +31,17 @@ const emptyForm: FormValues = {
   machineModel: "",
   costUnit: "EA",
   detailUnit: "EA",
+};
+
+const emptyMovement: MovementValues = {
+  legacyReference: "",
+  quantity: 1,
+  location: "",
+  supplierName: "",
+  invoiceNumber: "",
+  unitCost: 0,
+  reason: "Utilisée / Used",
+  note: "",
 };
 
 function money(value: number) {
@@ -40,6 +63,8 @@ export default function InventoryWorkspace() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [workflow, setWorkflow] = useState<Workflow>(null);
+  const [movement, setMovement] = useState<MovementValues>(emptyMovement);
 
   const load = async (term = "") => {
     setLoading(true);
@@ -97,6 +122,11 @@ export default function InventoryWorkspace() {
     setForm(emptyForm);
   };
 
+  const openWorkflow = (kind: Exclude<Workflow, null>) => {
+    setWorkflow(kind);
+    setMovement(emptyMovement);
+  };
+
   const updateField = (key: keyof FormValues, value: string) => {
     const numeric = ["quantityOnHand", "lastCost", "averageCost", "dealerPrice", "salePrice"].includes(key);
     setForm((current) => ({ ...current, [key]: numeric ? Number(value) || 0 : value }));
@@ -123,6 +153,28 @@ export default function InventoryWorkspace() {
       await load(search);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not save the part.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveMovement = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!workflow) return;
+    setSaving(true);
+    try {
+      const response = await fetch(workflow === "receipt" ? "/api/receipts" : "/api/issues", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(movement),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Impossible de modifier l'inventaire.");
+      setWorkflow(null);
+      setNotice(workflow === "receipt" ? "Réception ajoutée à l'inventaire." : "Sortie enregistrée dans l'inventaire.");
+      await load(search);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Impossible de modifier l'inventaire.");
     } finally {
       setSaving(false);
     }
@@ -159,7 +211,11 @@ export default function InventoryWorkspace() {
               <p className="eyebrow">Inventaire / Inventory</p>
               <h2>Catalogue de pièces</h2>
             </div>
-            <button className="primary" onClick={openCreate}>Ajouter une pièce</button>
+            <div className="action-group">
+              <button className="secondary" onClick={() => openWorkflow("receipt")}>Réception fournisseur</button>
+              <button className="issue-button" onClick={() => openWorkflow("issue")}>Sortie / casse</button>
+              <button className="primary" onClick={openCreate}>Ajouter une pièce</button>
+            </div>
           </div>
           <div className="search-row">
             <label className="search-box">
@@ -224,6 +280,34 @@ export default function InventoryWorkspace() {
                 <Field label="Unité mesure détail" value={form.detailUnit} onChange={(value) => updateField("detailUnit", value)} />
               </div>
               <div className="form-actions"><button type="button" className="secondary" onClick={() => { setSelected(null); setCreating(false); }}>Annuler / Cancel</button><button className="primary" disabled={saving}>{saving ? "Sauvegarde…" : creating ? "Ajouter la pièce" : "Sauvegarder"}</button></div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {workflow && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="editor movement-editor" role="dialog" aria-modal="true" aria-label={workflow === "receipt" ? "Réception fournisseur" : "Sortie de stock"}>
+            <div className="editor-heading">
+              <div><p className="eyebrow">Mouvement d'inventaire</p><h2>{workflow === "receipt" ? "Réception fournisseur" : "Sortie / casse"}</h2></div>
+              <button className="close" onClick={() => setWorkflow(null)}>×</button>
+            </div>
+            <p className="workflow-intro">{workflow === "receipt" ? "Ajoutez une ligne de facture, sa quantité, son prix coûtant et l'emplacement où la pièce est rangée." : "Enregistrez une pièce utilisée ou cassée. La quantité ne peut pas descendre sous zéro."}</p>
+            <form onSubmit={saveMovement}>
+              <div className="form-grid">
+                <label className="field"><span>No produit</span><input list="product-numbers" value={movement.legacyReference} required placeholder="Ex. 2344" onChange={(event) => setMovement((current) => ({ ...current, legacyReference: event.target.value }))} /><datalist id="product-numbers">{items.map((item) => <option key={item.id} value={item.legacyReference}>{item.description}</option>)}</datalist></label>
+                <Field label={workflow === "receipt" ? "Qte. reçue" : "Qte. sortie"} type="number" value={movement.quantity} onChange={(value) => setMovement((current) => ({ ...current, quantity: Number(value) || 0 }))} required />
+                {workflow === "receipt" ? <>
+                  <Field label="Emplacement (requis)" value={movement.location} onChange={(value) => setMovement((current) => ({ ...current, location: value }))} required />
+                  <Field label="No facture" value={movement.invoiceNumber} onChange={(value) => setMovement((current) => ({ ...current, invoiceNumber: value }))} />
+                  <Field label="Fournisseur" value={movement.supplierName} onChange={(value) => setMovement((current) => ({ ...current, supplierName: value }))} />
+                  <Field label="Prix coûtant unitaire (CAD)" type="number" value={movement.unitCost} onChange={(value) => setMovement((current) => ({ ...current, unitCost: Number(value) || 0 }))} />
+                </> : <>
+                  <label className="field"><span>Raison</span><select value={movement.reason} onChange={(event) => setMovement((current) => ({ ...current, reason: event.target.value }))}><option>Utilisée / Used</option><option>Casse / Broken</option><option>Ajustement / Adjustment</option></select></label>
+                  <Field label="Note (facultatif)" value={movement.note} onChange={(value) => setMovement((current) => ({ ...current, note: value }))} />
+                </>}
+              </div>
+              <div className="form-actions"><button type="button" className="secondary" onClick={() => setWorkflow(null)}>Annuler</button><button className={workflow === "issue" ? "issue-button" : "primary"} disabled={saving}>{saving ? "Sauvegarde…" : workflow === "receipt" ? "Ajouter au stock" : "Sortir du stock"}</button></div>
             </form>
           </section>
         </div>

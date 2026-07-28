@@ -15,6 +15,13 @@
       "when": 1785275904368,
       "tag": "0001_skinny_lethal_legion",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785276487871,
+      "tag": "0002_bizarre_rogue",
+      "breakpoints": true
     }
   ]
 }
