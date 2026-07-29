@@ -327,6 +327,26 @@ async function updateMachine(request: Request, db: D1Database, id: string) {
   return json({ machine: row && machineFromRow(row) });
 }
 
+async function deleteMachine(env: Env, id: string) {
+  const existingImage = await env.DB.prepare("SELECT object_key FROM machine_images WHERE master_family_id = ?").bind(id).first<D1Row>();
+  const machine = await env.DB.prepare("SELECT master_family_id FROM machine_families WHERE master_family_id = ?").bind(id).first<D1Row>();
+  if (!machine) return json({ error: "Cette machine est introuvable." }, 404);
+
+  // The inventory itself deliberately remains untouched. Removing a machine
+  // hides its reference entry, but preserves all recovered part records and
+  // their original machine labels for audit and future relinking.
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM machine_part_links WHERE master_family_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM machine_image_submissions WHERE master_family_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM machine_images WHERE master_family_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM machine_families WHERE master_family_id = ?").bind(id),
+  ]);
+
+  const objectKey = String(existingImage?.object_key ?? "");
+  if (objectKey && env.INVOICES) await env.INVOICES.delete(objectKey);
+  return json({ ok: true });
+}
+
 async function uploadMachineImage(request: Request, env: Env, id: string) {
   if (!env.INVOICES) return json({ error: "Le stockage sécurisé des images n’est pas encore disponible." }, 503);
   const exists = await env.DB.prepare("SELECT master_family_id FROM machine_families WHERE master_family_id = ?").bind(id).first<D1Row>();
@@ -372,6 +392,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (machineImageMatch && request.method === "POST") return uploadMachineImage(request, env, decodeURIComponent(machineImageMatch[1]));
   const machineMatch = url.pathname.match(/^\/api\/machines\/([^/]+)$/);
   if (machineMatch && request.method === "PATCH") return updateMachine(request, env.DB, decodeURIComponent(machineMatch[1]));
+  if (machineMatch && request.method === "DELETE") return deleteMachine(env, decodeURIComponent(machineMatch[1]));
   if (url.pathname === "/api/suppliers" && request.method === "GET") {
     const supplier = url.searchParams.get("supplier")?.trim() ?? "";
     if (supplier) {
@@ -389,9 +410,13 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const machineId = url.searchParams.get("machineId")?.trim() ?? "";
     const machineBrand = url.searchParams.get("machineBrand")?.trim() ?? "";
     const location = url.searchParams.get("location")?.trim() ?? "";
+    // The brand and model filters intentionally work at different levels.
+    // A brand (for example, Eastman) must retain every legacy record that
+    // mentions that manufacturer, even when the exact model is unknown. A
+    // selected model remains the narrower, research-backed filter.
     const selectedMachines = machineId
       ? machineCatalog.filter((machine) => machine.id === machineId)
-      : machineBrand ? machineCatalog.filter((machine) => machine.manufacturer === machineBrand) : [];
+      : [];
     const linkedMachine = machineId
       ? await env.DB.prepare("SELECT canonical_model, alternate_names, search_term FROM machine_families WHERE master_family_id = ?").bind(machineId).first<D1Row>()
       : null;
@@ -409,6 +434,13 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       const normalizedColumn = "UPPER(REPLACE(REPLACE(REPLACE(REPLACE(machine_model, '-', ''), '.', ''), '/', ''), ' ', ''))";
       filters.push(`(${machineTerms.map(() => `${normalizedColumn} LIKE ?`).join(" OR ")})`);
       values.push(...machineTerms.map((value) => `%${normalizedMachineTerm(value)}%`));
+    } else if (machineBrand) {
+      // Older records often identify a manufacturer's part in the description
+      // rather than in the machine/model field. Keep those records visible at
+      // the brand level, without guessing which specific model they fit.
+      filters.push("(machine_model LIKE ? OR description LIKE ?)");
+      const brandTerm = `%${machineBrand}%`;
+      values.push(brandTerm, brandTerm);
     }
     if (location) {
       filters.push("location = ?");
