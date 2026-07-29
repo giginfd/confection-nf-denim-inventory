@@ -7,6 +7,7 @@ import { machineCatalog, productionStages, type MachineCatalogEntry, type Machin
 import { machineResearchFamilies, machineResearchSnapshot } from "../app/lib/machine-research-family-seed";
 import { machineResearchImageSubmissions } from "../app/lib/machine-research-submission-seed";
 import { machineResearchLegacyLabelReviews } from "../app/lib/machine-research-review-seed";
+import { supplierContactAliases, supplierContactSeed, type SupplierContactSeed } from "../app/lib/supplier-contact-seed";
 
 interface Env {
   ASSETS: Fetcher;
@@ -87,6 +88,7 @@ const initializeStatements = [
   `CREATE TABLE IF NOT EXISTS inventory_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, change_type TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_delta REAL NOT NULL, quantity_before REAL NOT NULL, quantity_after REAL NOT NULL, location TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', invoice_number TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS invoice_documents (id TEXT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, file_name TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/pdf', size_bytes INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'uploaded', invoice_number TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS supplier_contacts (supplier_name TEXT PRIMARY KEY, supplier_code TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', website TEXT NOT NULL DEFAULT '', status_key TEXT NOT NULL DEFAULT 'verify', status_detail TEXT NOT NULL DEFAULT '', status_note TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', verified_date TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS market_offers (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, source_name TEXT NOT NULL, listing_url TEXT NOT NULL, price REAL NOT NULL, currency TEXT NOT NULL, availability TEXT NOT NULL DEFAULT 'unknown', match_status TEXT NOT NULL DEFAULT 'possible', note TEXT NOT NULL DEFAULT '', checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS machine_research_imports (snapshot_date TEXT PRIMARY KEY, schema_version TEXT NOT NULL, package_name TEXT NOT NULL, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS machine_families (master_family_id TEXT PRIMARY KEY, manufacturer TEXT NOT NULL, canonical_model TEXT NOT NULL, original_labels_preserved TEXT NOT NULL DEFAULT '', current_research_status TEXT NOT NULL DEFAULT '', suggested_production_step_french TEXT NOT NULL DEFAULT '', reclassification_action TEXT NOT NULL DEFAULT '', manual_service_url TEXT NOT NULL DEFAULT '', parts_url TEXT NOT NULL DEFAULT '', alternate_names TEXT NOT NULL DEFAULT '', search_term TEXT NOT NULL DEFAULT '', machine_status TEXT NOT NULL DEFAULT 'à confirmer', is_custom INTEGER NOT NULL DEFAULT 0, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT '')`,
@@ -99,6 +101,7 @@ const initializeStatements = [
   `CREATE INDEX IF NOT EXISTS stock_movements_inventory_idx ON stock_movements(inventory_id)`,
   `CREATE INDEX IF NOT EXISTS invoice_documents_created_idx ON invoice_documents(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_offers_inventory_idx ON market_offers(inventory_id, checked_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS supplier_contacts_code_idx ON supplier_contacts(supplier_code)`,
   `CREATE INDEX IF NOT EXISTS machine_families_manufacturer_idx ON machine_families(manufacturer)`,
   `CREATE INDEX IF NOT EXISTS machine_image_submissions_family_idx ON machine_image_submissions(master_family_id)`,
   `CREATE INDEX IF NOT EXISTS legacy_label_reviews_group_idx ON legacy_label_reviews(research_group_id)`,
@@ -127,6 +130,7 @@ async function initialize(db: D1Database) {
       await db.batch(statements);
     }
   }
+  await initializeSupplierContacts(db);
   await initializeMachineResearch(db);
   await ensureCuratedMachineCatalog(db);
 }
@@ -138,6 +142,33 @@ async function ensureColumn(db: D1Database, table: string, column: string, defin
 
 async function seedInChunks(db: D1Database, statements: D1PreparedStatement[]) {
   for (let offset = 0; offset < statements.length; offset += 100) await db.batch(statements.slice(offset, offset + 100));
+}
+
+function supplierContactFromRow(row?: D1Row | null) {
+  if (!row) return null;
+  return {
+    supplierCode: String(row.supplier_code ?? ""),
+    address: String(row.address ?? ""),
+    phone: String(row.phone ?? ""),
+    email: String(row.email ?? ""),
+    website: String(row.website ?? ""),
+    statusKey: String(row.status_key ?? "verify"),
+    statusDetail: String(row.status_detail ?? ""),
+    statusNote: String(row.status_note ?? ""),
+    sourceUrl: String(row.source_url ?? ""),
+    verifiedDate: String(row.verified_date ?? ""),
+  };
+}
+
+async function initializeSupplierContacts(db: D1Database) {
+  const contacts = [...supplierContactSeed, ...supplierContactAliases.flatMap((alias) => {
+    const contact = supplierContactSeed.find((entry) => entry.supplierName === alias.researchedSupplierName);
+    return contact ? [{ ...contact, supplierName: alias.legacySupplierName }] : [];
+  })];
+  const statements = contacts.map((contact: SupplierContactSeed) => db.prepare(
+    `INSERT OR IGNORE INTO supplier_contacts (supplier_name, supplier_code, address, phone, email, website, status_key, status_detail, status_note, source_url, verified_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(contact.supplierName, contact.supplierCode, contact.address, contact.phone, contact.email, contact.website, contact.statusKey, contact.statusDetail, contact.statusNote, contact.sourceUrl, contact.verifiedDate));
+  await seedInChunks(db, statements);
 }
 
 async function initializeMachineResearch(db: D1Database) {
@@ -383,6 +414,20 @@ async function machineImage(env: Env, id: string) {
   return new Response(object.body, { headers: { "content-type": object.httpMetadata?.contentType ?? "application/octet-stream", "cache-control": "private, max-age=3600" } });
 }
 
+const supplierStatusKeys = new Set(["active", "inactive", "verify", "not_supplier"]);
+
+async function updateSupplierContact(request: Request, db: D1Database, supplierName: string) {
+  const body = await request.json<Record<string, unknown>>();
+  const statusKey = text(body.statusKey) || "verify";
+  if (!supplierStatusKeys.has(statusKey)) return json({ error: "Choisissez un état valide." }, 400);
+  const existingSupplier = await db.prepare("SELECT 1 FROM inventory_items WHERE TRIM(supplier_name) = ? COLLATE NOCASE LIMIT 1").bind(supplierName).first<D1Row>();
+  if (!existingSupplier) return json({ error: "Ce fournisseur est introuvable." }, 404);
+  await db.prepare(`INSERT INTO supplier_contacts (supplier_name, supplier_code, address, phone, email, website, status_key, status_detail, status_note, source_url, verified_date, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(supplier_name) DO UPDATE SET supplier_code = excluded.supplier_code, address = excluded.address, phone = excluded.phone, email = excluded.email, website = excluded.website, status_key = excluded.status_key, status_detail = excluded.status_detail, status_note = excluded.status_note, source_url = excluded.source_url, verified_date = excluded.verified_date, updated_at = CURRENT_TIMESTAMP`)
+    .bind(supplierName, text(body.supplierCode), text(body.address), text(body.phone), text(body.email), text(body.website), statusKey, text(body.statusDetail), text(body.statusNote), text(body.sourceUrl), text(body.verifiedDate)).run();
+  const row = await db.prepare("SELECT * FROM supplier_contacts WHERE supplier_name = ? COLLATE NOCASE").bind(supplierName).first<D1Row>();
+  return json({ contact: supplierContactFromRow(row) });
+}
+
 async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
   await initialize(env.DB);
   if (url.pathname === "/api/machines" && request.method === "GET") return listMachines(env.DB);
@@ -393,14 +438,17 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   const machineMatch = url.pathname.match(/^\/api\/machines\/([^/]+)$/);
   if (machineMatch && request.method === "PATCH") return updateMachine(request, env.DB, decodeURIComponent(machineMatch[1]));
   if (machineMatch && request.method === "DELETE") return deleteMachine(env, decodeURIComponent(machineMatch[1]));
+  const supplierContactMatch = url.pathname.match(/^\/api\/suppliers\/([^/]+)$/);
+  if (supplierContactMatch && request.method === "PATCH") return updateSupplierContact(request, env.DB, decodeURIComponent(supplierContactMatch[1]));
   if (url.pathname === "/api/suppliers" && request.method === "GET") {
     const supplier = url.searchParams.get("supplier")?.trim() ?? "";
     if (supplier) {
       const records = await env.DB.prepare("SELECT * FROM inventory_items WHERE TRIM(supplier_name) = ? COLLATE NOCASE ORDER BY description ASC, id ASC").bind(supplier).all<D1Row>();
-      return json({ supplier, items: records.results.map(item) });
+      const contact = await env.DB.prepare("SELECT * FROM supplier_contacts WHERE supplier_name = ? COLLATE NOCASE").bind(supplier).first<D1Row>();
+      return json({ supplier, contact: supplierContactFromRow(contact), items: records.results.map(item) });
     }
-    const suppliers = await env.DB.prepare(`SELECT TRIM(supplier_name) AS name, GROUP_CONCAT(DISTINCT NULLIF(TRIM(supplier_category_code), '')) AS codes, COUNT(*) AS product_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand, COALESCE(SUM(CASE WHEN quantity_on_hand > 0 THEN quantity_on_hand * last_cost ELSE 0 END), 0) AS inventory_value FROM inventory_items WHERE TRIM(supplier_name) <> '' GROUP BY TRIM(supplier_name) COLLATE NOCASE ORDER BY name COLLATE NOCASE`).all<D1Row>();
-    return json({ suppliers: suppliers.results.map((row) => ({ name: String(row.name), codes: String(row.codes ?? "").split(",").map((value) => value.trim()).filter(Boolean), productCount: Number(row.product_count ?? 0), unitsOnHand: Number(row.units_on_hand ?? 0), inventoryValue: Number(row.inventory_value ?? 0) })) });
+    const suppliers = await env.DB.prepare(`SELECT TRIM(i.supplier_name) AS name, GROUP_CONCAT(DISTINCT NULLIF(TRIM(i.supplier_category_code), '')) AS codes, COUNT(*) AS product_count, COALESCE(SUM(i.quantity_on_hand), 0) AS units_on_hand, COALESCE(SUM(CASE WHEN i.quantity_on_hand > 0 THEN i.quantity_on_hand * i.last_cost ELSE 0 END), 0) AS inventory_value, c.supplier_code, c.address, c.phone, c.email, c.website, c.status_key, c.status_detail, c.status_note, c.source_url, c.verified_date FROM inventory_items i LEFT JOIN supplier_contacts c ON UPPER(TRIM(i.supplier_name)) = UPPER(TRIM(c.supplier_name)) WHERE TRIM(i.supplier_name) <> '' GROUP BY TRIM(i.supplier_name) COLLATE NOCASE ORDER BY name COLLATE NOCASE`).all<D1Row>();
+    return json({ suppliers: suppliers.results.map((row) => ({ name: String(row.name), codes: String(row.codes ?? "").split(",").map((value) => value.trim()).filter(Boolean), productCount: Number(row.product_count ?? 0), unitsOnHand: Number(row.units_on_hand ?? 0), inventoryValue: Number(row.inventory_value ?? 0), contact: supplierContactFromRow(row) })) });
   }
   if (url.pathname === "/api/inventory" && request.method === "GET") {
     const search = url.searchParams.get("search")?.trim() ?? "";
