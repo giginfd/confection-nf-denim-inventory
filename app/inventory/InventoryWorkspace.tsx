@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { InventoryChange, InventoryItem, InventorySummary } from "../lib/inventory-types";
 import AppNavigation from "../components/AppNavigation";
+import { machineCatalog, type MachineCatalogEntry } from "../lib/machine-catalog";
 
 type FormValues = Omit<InventoryItem, "id" | "createdAt" | "updatedAt">;
 type Workflow = "receipt" | "issue" | null;
@@ -79,11 +80,36 @@ function shortDate(value: string) {
   return new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
+function machineDetailsLink(machineLabel: string, catalog: MachineCatalogEntry[]) {
+  const normalized = machineLabel.trim().toLocaleUpperCase("fr-CA").replace(/[^A-Z0-9]/g, "");
+  if (!normalized) return "";
+  const match = catalog.find((machine) => [machine.searchTerm, ...(machine.searchTerms ?? []), machine.model].some((term) => {
+    const candidate = term.trim().toLocaleUpperCase("fr-CA").replace(/[^A-Z0-9]/g, "");
+    return candidate.length >= 4 && (normalized.includes(candidate) || candidate.includes(normalized));
+  }));
+  return match ? `/machines?machine=${encodeURIComponent(match.id)}` : "";
+}
+
+function MachineDetailsLink({ machineLabel, catalog }: { machineLabel: string; catalog: MachineCatalogEntry[] }) {
+  const href = machineDetailsLink(machineLabel, catalog);
+  return href ? <a className="machine-inventory-link" href={href} onClick={(event) => event.stopPropagation()}>{machineLabel}</a> : <>{machineLabel}</>;
+}
+
+function MachineModelField({ value, onChange, catalog }: { value: string; onChange: (value: string) => void; catalog: MachineCatalogEntry[] }) {
+  const href = machineDetailsLink(value, catalog);
+  return <div className="machine-model-field"><Field label="Modèle de machine / Machine model" value={value} onChange={onChange} />{href && <a className="machine-inventory-link" href={href}>Voir la machine associée</a>}</div>;
+}
+
 export default function InventoryWorkspace() {
   const [items, setItems] = useState<InventoryItem[]>([]);
+  const [machineLinks, setMachineLinks] = useState<MachineCatalogEntry[]>(machineCatalog);
   const [summary, setSummary] = useState<InventorySummary | null>(null);
   const [activity, setActivity] = useState<InventoryChange[]>([]);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [machineId, setMachineId] = useState("");
+  const [machineBrand, setMachineBrand] = useState("");
+  const [locationFilter, setLocationFilter] = useState("");
   const [sortKey, setSortKey] = useState<InventorySortKey>("description");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [selected, setSelected] = useState<InventoryItem | null>(null);
@@ -99,10 +125,13 @@ export default function InventoryWorkspace() {
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [uploadingInvoice, setUploadingInvoice] = useState(false);
 
+  const machineBrands = useMemo(() => [...new Set(machineLinks.map((machine) => machine.manufacturer))].sort(), [machineLinks]);
+  const machineOptions = useMemo(() => machineLinks.filter((machine) => !machineBrand || machine.manufacturer === machineBrand), [machineBrand, machineLinks]);
+
   const load = async (term = "", requestedSort = sortKey, requestedDirection = sortDirection) => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/inventory?search=${encodeURIComponent(term)}&sort=${requestedSort}&direction=${requestedDirection}`);
+      const response = await fetch(`/api/inventory?search=${encodeURIComponent(term)}&sort=${requestedSort}&direction=${requestedDirection}&machineId=${encodeURIComponent(machineId)}&machineBrand=${encodeURIComponent(machineBrand)}&location=${encodeURIComponent(locationFilter)}`);
       if (!response.ok) throw new Error("Could not load inventory");
       const payload = await response.json();
       setItems(payload.items);
@@ -122,9 +151,26 @@ export default function InventoryWorkspace() {
   }, []);
 
   useEffect(() => {
+    void fetch("/api/machines").then(async (response) => {
+      if (!response.ok) return;
+      const data = await response.json() as { machines?: MachineCatalogEntry[] };
+      if (Array.isArray(data.machines)) setMachineLinks(data.machines);
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const requestedSearch = new URLSearchParams(window.location.search).get("search")?.trim();
+    const requestedLocation = new URLSearchParams(window.location.search).get("location")?.trim();
+    const requestedMachineId = new URLSearchParams(window.location.search).get("machineId")?.trim();
+    if (requestedSearch) setSearch(requestedSearch);
+    if (requestedLocation) setLocationFilter(requestedLocation);
+    if (requestedMachineId) setMachineId(requestedMachineId);
+  }, []);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => void load(search), 220);
     return () => window.clearTimeout(timer);
-  }, [search, sortKey, sortDirection]);
+  }, [search, sortKey, sortDirection, machineId, machineBrand, locationFilter]);
 
   const formTitle = creating ? "Nouvelle fiche produit / New product record" : `Modifier / Edit ${selected?.legacyReference ?? "part"}`;
   const displayedItems = useMemo(() => items.slice(0, 80), [items]);
@@ -266,10 +312,13 @@ export default function InventoryWorkspace() {
         <Metric label="No produit / Product no." value={summary?.productCount.toLocaleString() ?? "—"} detail="fiches de pièces actuelles" />
         <Metric label="Qte. en inventaire" value={summary?.unitsOnHand.toLocaleString() ?? "—"} detail="unités dans toutes les pièces" />
         <Metric label="Valeur de l'inventaire" value={summary ? money(summary.inventoryValueAtLastCost) : "—"} detail="au dernier prix coûtant connu" />
-        <Metric label="À zéro / Zero stock" value={summary?.zeroStockCount.toLocaleString() ?? "—"} detail="pièces à vérifier" warning />
-        <Metric label="Fournisseurs / Suppliers" value={summary?.supplierCount.toLocaleString() ?? "—"} detail="catégories dans l'inventaire" />
+        <Metric label="Machines et équipements" value={machineLinks.length.toLocaleString()} detail="ouvrir les machines associées" href="/machines" />
+        <Metric label="Fournisseurs" value={summary?.supplierCount.toLocaleString() ?? "—"} detail="voir les fournisseurs et leurs pièces" href="/fournisseurs" />
       </section>
 
+      {!activityOpen && <button className="activity-drawer-toggle" type="button" onClick={() => setActivityOpen(true)} aria-expanded={activityOpen} aria-controls="recent-activity">
+        Modifications récentes <span>{activity.length}</span>
+      </button>}
       <section className="workspace">
         <div className="inventory-panel">
           <div className="section-heading">
@@ -284,12 +333,17 @@ export default function InventoryWorkspace() {
             </div>
           </div>
           <div className="search-row">
-            <label className="search-box">
-              <span>⌕</span>
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Rechercher par no. produit, no. pièce fournisseur, description, machine ou emplacement" aria-label="Rechercher dans l'inventaire" />
+            <label className="search-field">
+              <span>Rechercher une pièce</span>
+              <div className="search-box">
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Entrez no. produit, description, machine ou emplacement" aria-label="Rechercher dans l'inventaire" />
+              </div>
             </label>
+            <label className="inventory-filter"><span>Marque de machine</span><select value={machineBrand} onChange={(event) => { setMachineBrand(event.target.value); setMachineId(""); }}><option value="">Toutes les marques</option>{machineBrands.map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
+            <label className="inventory-filter"><span>Machine / modèle</span><select value={machineId} onChange={(event) => setMachineId(event.target.value)}><option value="">Toutes les machines</option>{machineOptions.map((machine) => <option value={machine.id} key={machine.id}>{machine.manufacturer} · {machine.model}</option>)}</select></label>
             <span className="results-count">{loading ? "Chargement…" : `${items.length.toLocaleString()} résultats`}</span>
           </div>
+          {locationFilter && <div className="active-location-filter"><span>Emplacement sélectionné : <strong>{locationFilter}</strong></span><button type="button" onClick={() => setLocationFilter("")}>Voir tous les emplacements</button></div>}
           <div className="table-wrap">
             <table>
               <thead><tr>{visibleSortableColumns.map((column) => {
@@ -303,7 +357,7 @@ export default function InventoryWorkspace() {
                     <td className="sku">{item.legacyReference}</td>
                     {summary?.supplierPartNumberCount ? <td className="sku">{item.supplierPartNumber || <span className="muted">—</span>}</td> : null}
                     <td><strong>{item.description}</strong></td>
-                    <td>{item.machineModel || <span className="muted">—</span>}</td>
+                    <td>{item.machineModel ? <MachineDetailsLink machineLabel={item.machineModel} catalog={machineLinks} /> : <span className="muted">—</span>}</td>
                     <td>{item.location || <span className="muted">—</span>}</td>
                     <td><span className={item.quantityOnHand === 0 ? "quantity zero" : "quantity"}>{item.quantityOnHand}</span></td>
                     <td>{item.supplierName || <span className="muted">—</span>}</td>
@@ -314,12 +368,21 @@ export default function InventoryWorkspace() {
             </table>
             {!loading && !items.length && <p className="empty">Aucune pièce ne correspond à cette recherche.</p>}
           </div>
+          <div className="mobile-product-list" aria-label="Résultats d’inventaire pour téléphone">
+            {!loading && displayedItems.map((item) => <article className="mobile-product-card" key={item.id}>
+              <span className="mobile-product-top"><b className="sku">{item.legacyReference}</b><strong className={item.quantityOnHand === 0 ? "quantity zero" : "quantity"}>Qte. {item.quantityOnHand}</strong></span>
+              <strong className="mobile-product-description">{item.description}</strong>
+              <span className="mobile-product-meta"><b>Empla.</b> {item.location || "—"} <b>Machine</b> {item.machineModel ? <MachineDetailsLink machineLabel={item.machineModel} catalog={machineLinks} /> : "—"}</span>
+              <span className="mobile-product-meta"><b>Fournisseur</b> {item.supplierName || "—"} <b>Coût</b> {money(item.lastCost)}</span>
+              <button type="button" className="mobile-product-open" onClick={() => openEdit(item)}>Voir ou modifier la pièce</button>
+            </article>)}
+            {!loading && !items.length && <p className="empty">Aucune pièce ne correspond à cette recherche.</p>}
+          </div>
           {items.length > displayedItems.length && <p className="table-foot">Les 80 premiers résultats sont affichés. Précisez votre recherche pour réduire la liste.</p>}
         </div>
 
-        <aside className="activity-panel">
-          <p className="eyebrow">Historique / Activity</p>
-          <h2>Modifications récentes</h2>
+        <aside id="recent-activity" className={`activity-panel activity-drawer ${activityOpen ? "open" : ""}`} aria-hidden={!activityOpen}>
+          <div className="activity-drawer-heading"><div><p className="eyebrow">Historique / Activity</p><h2>Modifications récentes</h2></div><button className="close" type="button" aria-label="Fermer les modifications récentes" onClick={() => setActivityOpen(false)}>×</button></div>
           <p className="aside-copy">Chaque nouvelle pièce et chaque correction sauvegardée apparaissent ici.</p>
           <div className="activity-list">
             {activity.length ? activity.map((entry) => (
@@ -345,7 +408,7 @@ export default function InventoryWorkspace() {
                 <Field label="Emplacement / Location" value={form.location} onChange={(value) => updateField("location", value)} />
                 <Field label="Fournisseur / Supplier" value={form.supplierName} onChange={(value) => updateField("supplierName", value)} />
                 <Field label="Code fournisseur / Supplier code" value={form.supplierCategoryCode} onChange={(value) => updateField("supplierCategoryCode", value)} />
-                <Field label="Modèle de machine / Machine model" value={form.machineModel} onChange={(value) => updateField("machineModel", value)} />
+                <MachineModelField value={form.machineModel} onChange={(value) => updateField("machineModel", value)} catalog={machineLinks} />
                 <Field label="Prix coûtant (CAD)" type="number" value={form.lastCost} onChange={(value) => updateField("lastCost", value)} />
                 <Field label="Divers (hérité)" type="number" value={form.averageCost} onChange={(value) => updateField("averageCost", value)} />
                 <Field label="Prix de vente (CAD)" type="number" value={form.dealerPrice} onChange={(value) => updateField("dealerPrice", value)} />
@@ -404,8 +467,9 @@ export default function InventoryWorkspace() {
   );
 }
 
-function Metric({ label, value, detail, warning = false }: { label: string; value: string; detail: string; warning?: boolean }) {
-  return <article className={warning ? "metric warning" : "metric"}><p>{label}</p><strong>{value}</strong><span>{detail}</span></article>;
+function Metric({ label, value, detail, warning = false, href }: { label: string; value: string; detail: string; warning?: boolean; href?: string }) {
+  const content = <><p>{label}</p><strong>{value}</strong><span>{detail}</span></>;
+  return href ? <a className={`${warning ? "metric warning" : "metric"} metric-link`} href={href}>{content}</a> : <article className={warning ? "metric warning" : "metric"}>{content}</article>;
 }
 
 function Field({ label, value, onChange, type = "text", required = false }: { label: string; value: string | number; onChange: (value: string) => void; type?: string; required?: boolean }) {

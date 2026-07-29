@@ -3,6 +3,10 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { runWithExecutionContext } from "vinext/shims/request-context";
 import { inventorySeed } from "../app/lib/inventory-seed";
+import { machineCatalog, productionStages, type MachineCatalogEntry, type MachineStage, type MachineStatus } from "../app/lib/machine-catalog";
+import { machineResearchFamilies, machineResearchSnapshot } from "../app/lib/machine-research-family-seed";
+import { machineResearchImageSubmissions } from "../app/lib/machine-research-submission-seed";
+import { machineResearchLegacyLabelReviews } from "../app/lib/machine-research-review-seed";
 
 interface Env {
   ASSETS: Fetcher;
@@ -84,11 +88,21 @@ const initializeStatements = [
   `CREATE TABLE IF NOT EXISTS stock_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_delta REAL NOT NULL, quantity_before REAL NOT NULL, quantity_after REAL NOT NULL, location TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', invoice_number TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS invoice_documents (id TEXT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, file_name TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/pdf', size_bytes INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'uploaded', invoice_number TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS market_offers (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, source_name TEXT NOT NULL, listing_url TEXT NOT NULL, price REAL NOT NULL, currency TEXT NOT NULL, availability TEXT NOT NULL DEFAULT 'unknown', match_status TEXT NOT NULL DEFAULT 'possible', note TEXT NOT NULL DEFAULT '', checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS machine_research_imports (snapshot_date TEXT PRIMARY KEY, schema_version TEXT NOT NULL, package_name TEXT NOT NULL, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS machine_families (master_family_id TEXT PRIMARY KEY, manufacturer TEXT NOT NULL, canonical_model TEXT NOT NULL, original_labels_preserved TEXT NOT NULL DEFAULT '', current_research_status TEXT NOT NULL DEFAULT '', suggested_production_step_french TEXT NOT NULL DEFAULT '', reclassification_action TEXT NOT NULL DEFAULT '', manual_service_url TEXT NOT NULL DEFAULT '', parts_url TEXT NOT NULL DEFAULT '', alternate_names TEXT NOT NULL DEFAULT '', search_term TEXT NOT NULL DEFAULT '', machine_status TEXT NOT NULL DEFAULT 'à confirmer', is_custom INTEGER NOT NULL DEFAULT 0, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT '')`,
+  `CREATE TABLE IF NOT EXISTS machine_images (master_family_id TEXT PRIMARY KEY, manufacturer TEXT NOT NULL DEFAULT '', canonical_model_equipment TEXT NOT NULL DEFAULT '', original_legacy_labels_preserved TEXT NOT NULL DEFAULT '', production_step_french TEXT NOT NULL DEFAULT '', research_status TEXT NOT NULL DEFAULT '', local_image_filename TEXT NOT NULL, local_relative_path TEXT NOT NULL DEFAULT '', public_path TEXT NOT NULL, object_key TEXT NOT NULL DEFAULT '', is_user_supplied INTEGER NOT NULL DEFAULT 0, visual_match TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', asset_url TEXT NOT NULL DEFAULT '', source_evidence_type TEXT NOT NULL DEFAULT '', use_note TEXT NOT NULL DEFAULT '', publication_recommendation TEXT NOT NULL DEFAULT '', rights_attribution TEXT NOT NULL DEFAULT '', imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS machine_image_submissions (id INTEGER PRIMARY KEY AUTOINCREMENT, master_family_id TEXT NOT NULL, manufacturer TEXT NOT NULL DEFAULT '', model_supplied_by_user TEXT NOT NULL DEFAULT '', plate_model_visible TEXT NOT NULL DEFAULT '', supplied_filename TEXT NOT NULL DEFAULT '', local_relative_path TEXT NOT NULL DEFAULT '', library_decision TEXT NOT NULL DEFAULT '', visual_assessment TEXT NOT NULL DEFAULT '', evidence_note TEXT NOT NULL DEFAULT '', original_source_url TEXT NOT NULL DEFAULT '', rights_attribution TEXT NOT NULL DEFAULT '', date_received TEXT NOT NULL DEFAULT '', imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS legacy_label_reviews (review_id TEXT PRIMARY KEY, original_unresolved_legacy_label TEXT NOT NULL, linked_inventory_part_records INTEGER NOT NULL DEFAULT 0, unique_product_numbers INTEGER NOT NULL DEFAULT 0, possible_manufacturer_equipment_hint_source TEXT NOT NULL DEFAULT '', example_product_descriptions_source TEXT NOT NULL DEFAULT '', example_suppliers_source TEXT NOT NULL DEFAULT '', research_group_id TEXT NOT NULL DEFAULT '', likely_manufacturer_model_role TEXT NOT NULL DEFAULT '', french_ui_label TEXT NOT NULL DEFAULT '', production_step_french TEXT NOT NULL DEFAULT '', outcome_en TEXT NOT NULL DEFAULT '', verification_status_fr TEXT NOT NULL DEFAULT '', evidence_and_caution_en TEXT NOT NULL DEFAULT '', next_verification_step_en TEXT NOT NULL DEFAULT '', manual_parts_evidence_links TEXT NOT NULL DEFAULT '', page_treatment_french TEXT NOT NULL DEFAULT '', imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS machine_part_links (id INTEGER PRIMARY KEY AUTOINCREMENT, master_family_id TEXT NOT NULL, inventory_id INTEGER, legacy_reference TEXT NOT NULL DEFAULT '', relationship_type TEXT NOT NULL DEFAULT 'mentioned_with_label', confidence TEXT NOT NULL DEFAULT '', evidence_type TEXT NOT NULL DEFAULT '', evidence_reference TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE INDEX IF NOT EXISTS inventory_items_description_idx ON inventory_items(description)`,
   `CREATE INDEX IF NOT EXISTS inventory_changes_created_idx ON inventory_changes(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS stock_movements_inventory_idx ON stock_movements(inventory_id)`,
   `CREATE INDEX IF NOT EXISTS invoice_documents_created_idx ON invoice_documents(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_offers_inventory_idx ON market_offers(inventory_id, checked_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS machine_families_manufacturer_idx ON machine_families(manufacturer)`,
+  `CREATE INDEX IF NOT EXISTS machine_image_submissions_family_idx ON machine_image_submissions(master_family_id)`,
+  `CREATE INDEX IF NOT EXISTS legacy_label_reviews_group_idx ON legacy_label_reviews(research_group_id)`,
+  `CREATE INDEX IF NOT EXISTS machine_part_links_family_idx ON machine_part_links(master_family_id)`,
 ];
 
 async function initialize(db: D1Database) {
@@ -97,14 +111,80 @@ async function initialize(db: D1Database) {
   if (!supplierPartNumberColumn) {
     await db.prepare("ALTER TABLE inventory_items ADD COLUMN supplier_part_number TEXT NOT NULL DEFAULT ''").run();
   }
+  await ensureColumn(db, "machine_families", "alternate_names", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "machine_families", "search_term", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "machine_families", "machine_status", "TEXT NOT NULL DEFAULT 'à confirmer'");
+  await ensureColumn(db, "machine_families", "is_custom", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, "machine_families", "updated_at", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "machine_images", "object_key", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "machine_images", "is_user_supplied", "INTEGER NOT NULL DEFAULT 0");
   const result = await db.prepare("SELECT COUNT(*) AS count FROM inventory_items").first<{ count: number }>();
-  if ((result?.count ?? 0) > 0) return;
-  for (let offset = 0; offset < inventorySeed.length; offset += 100) {
-    const statements = inventorySeed.slice(offset, offset + 100).map((item) => db.prepare(
-      `INSERT OR IGNORE INTO inventory_items (legacy_reference, supplier_category_code, supplier_name, description, quantity_on_hand, last_cost, average_cost, dealer_price, sale_price, location, machine_model, cost_unit, detail_unit, legacy_raw_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(item.legacyReference, item.supplierCategoryCode, item.supplierName, item.description, item.quantityOnHand, item.lastCost, item.averageCost, item.dealerPrice, item.salePrice, item.location, item.machineModel, item.costUnit, item.detailUnit, JSON.stringify(item.legacyRawData)));
-    await db.batch(statements);
+  if ((result?.count ?? 0) === 0) {
+    for (let offset = 0; offset < inventorySeed.length; offset += 100) {
+      const statements = inventorySeed.slice(offset, offset + 100).map((item) => db.prepare(
+        `INSERT OR IGNORE INTO inventory_items (legacy_reference, supplier_category_code, supplier_name, description, quantity_on_hand, last_cost, average_cost, dealer_price, sale_price, location, machine_model, cost_unit, detail_unit, legacy_raw_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(item.legacyReference, item.supplierCategoryCode, item.supplierName, item.description, item.quantityOnHand, item.lastCost, item.averageCost, item.dealerPrice, item.salePrice, item.location, item.machineModel, item.costUnit, item.detailUnit, JSON.stringify(item.legacyRawData)));
+      await db.batch(statements);
+    }
   }
+  await initializeMachineResearch(db);
+  await ensureCuratedMachineCatalog(db);
+}
+
+async function ensureColumn(db: D1Database, table: string, column: string, definition: string) {
+  const existing = await db.prepare(`SELECT name FROM pragma_table_info('${table}') WHERE name = ?`).bind(column).first<D1Row>();
+  if (!existing) await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+}
+
+async function seedInChunks(db: D1Database, statements: D1PreparedStatement[]) {
+  for (let offset = 0; offset < statements.length; offset += 100) await db.batch(statements.slice(offset, offset + 100));
+}
+
+async function initializeMachineResearch(db: D1Database) {
+  const alreadyImported = await db.prepare("SELECT snapshot_date FROM machine_research_imports WHERE snapshot_date = ?").bind(machineResearchSnapshot.snapshotDate).first<D1Row>();
+  if (alreadyImported) return;
+
+  await seedInChunks(db, machineResearchFamilies.map((family) => db.prepare(
+    `INSERT OR IGNORE INTO machine_families (master_family_id, manufacturer, canonical_model, original_labels_preserved, current_research_status, suggested_production_step_french, reclassification_action, manual_service_url, parts_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(family.masterFamilyId, family.manufacturer, family.canonicalModel, family.originalLabelsPreserved, family.currentResearchStatus, family.suggestedProductionStepFrench, family.reclassificationAction, family.manualServiceUrl, family.partsUrl)));
+
+  await seedInChunks(db, machineResearchFamilies.map((family) => {
+    const image = family.image;
+    return db.prepare(`INSERT OR IGNORE INTO machine_images (master_family_id, manufacturer, canonical_model_equipment, original_legacy_labels_preserved, production_step_french, research_status, local_image_filename, local_relative_path, public_path, visual_match, source_url, asset_url, source_evidence_type, use_note, publication_recommendation, rights_attribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(image.masterFamilyId, image.manufacturer, image.canonicalModelEquipment, image.originalLegacyLabelsPreserved, image.productionStepFrench, image.researchStatus, image.localImageFilename, image.localRelativePath, image.publicPath, image.visualMatch, image.sourceUrl, image.assetUrl, image.sourceEvidenceType, image.useNote, image.publicationRecommendation, image.rightsAttribution);
+  }));
+
+  await seedInChunks(db, machineResearchImageSubmissions.map((submission) => db.prepare(
+    `INSERT OR IGNORE INTO machine_image_submissions (master_family_id, manufacturer, model_supplied_by_user, plate_model_visible, supplied_filename, local_relative_path, library_decision, visual_assessment, evidence_note, original_source_url, rights_attribution, date_received) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(submission.masterFamilyId, submission.manufacturer, submission.modelSuppliedByUser, submission.plateModelVisible, submission.suppliedFilename, submission.localRelativePath, submission.libraryDecision, submission.visualAssessment, submission.evidenceNote, submission.originalSourceUrl, submission.rightsAttribution, submission.dateReceived)));
+
+  await seedInChunks(db, machineResearchLegacyLabelReviews.map((review) => db.prepare(
+    `INSERT OR IGNORE INTO legacy_label_reviews (review_id, original_unresolved_legacy_label, linked_inventory_part_records, unique_product_numbers, possible_manufacturer_equipment_hint_source, example_product_descriptions_source, example_suppliers_source, research_group_id, likely_manufacturer_model_role, french_ui_label, production_step_french, outcome_en, verification_status_fr, evidence_and_caution_en, next_verification_step_en, manual_parts_evidence_links, page_treatment_french) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(review.reviewId, review.originalUnresolvedLegacyLabel, review.linkedInventoryPartRecords, review.uniqueProductNumbers, review.possibleManufacturerEquipmentHintSource, review.exampleProductDescriptionsSource, review.exampleSuppliersSource, review.researchGroupId, review.likelyManufacturerModelRole, review.frenchUiLabel, review.productionStepFrench, review.outcomeEn, review.verificationStatusFr, review.evidenceAndCautionEn, review.nextVerificationStepEn, review.manualPartsEvidenceLinks, review.pageTreatmentFrench)));
+
+  await db.prepare("INSERT OR IGNORE INTO machine_research_imports (snapshot_date, schema_version, package_name) VALUES (?, ?, ?)")
+    .bind(machineResearchSnapshot.snapshotDate, machineResearchSnapshot.schemaVersion, machineResearchSnapshot.packageName).run();
+}
+
+// Some equipment is confirmed by the recovered records but was deliberately
+// excluded from the 55 sewing-machine research families. Seed it separately,
+// without changing or duplicating any existing research or user-made record.
+async function ensureCuratedMachineCatalog(db: D1Database) {
+  await seedInChunks(db, machineCatalog.map((machine) => db.prepare(
+    `INSERT OR IGNORE INTO machine_families (master_family_id, manufacturer, canonical_model, original_labels_preserved, current_research_status, suggested_production_step_french, manual_service_url, parts_url, alternate_names, search_term, machine_status, is_custom, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)`
+  ).bind(
+    machine.id,
+    machine.manufacturer,
+    machine.model,
+    machine.originalLabelsPreserved ?? "",
+    machine.note,
+    machine.stage,
+    machine.instructionUrl ?? "",
+    machine.partsUrl ?? "",
+    machine.alternateNames ?? "",
+    [...new Set(machine.searchTerms ?? [machine.searchTerm])].join(" | "),
+    machine.status,
+  )));
 }
 
 function json(data: unknown, status = 200) {
@@ -169,17 +249,176 @@ function item(row: D1Row) {
   };
 }
 
+const machineStages = new Set<string>(productionStages);
+const machineStatuses = new Set<MachineStatus>(["confirmé", "à vérifier", "à confirmer"]);
+
+function normalizedMachineTerm(value: string) {
+  return value.toLocaleUpperCase("fr-CA").replace(/[^A-Z0-9]/g, "");
+}
+
+function machineFromRow(row: D1Row): MachineCatalogEntry {
+  const masterFamilyId = String(row.master_family_id);
+  const existing = machineCatalog.find((entry) => entry.id === masterFamilyId);
+  const isCustom = Number(row.is_custom ?? 0) === 1;
+  const storedStatus = String(row.machine_status ?? "");
+  const publicPath = String(row.image_public_path ?? "");
+  return {
+    id: masterFamilyId,
+    masterFamilyId,
+    manufacturer: String(row.manufacturer),
+    model: String(row.canonical_model),
+    stage: (machineStages.has(String(row.suggested_production_step_french)) ? String(row.suggested_production_step_french) : "Assemblage — couture principale") as MachineStage,
+    linkedRecords: existing?.linkedRecords ?? 0,
+    status: isCustom && machineStatuses.has(storedStatus as MachineStatus) ? storedStatus as MachineStatus : existing?.status ?? "à confirmer",
+    searchTerm: String(row.search_term || existing?.searchTerm || row.canonical_model),
+    searchTerms: existing?.searchTerms ?? String(row.search_term || existing?.searchTerm || row.canonical_model).split("|").map((term) => term.trim()).filter(Boolean),
+    note: String(row.current_research_status || (isCustom ? "Ajoutée par l’équipe — à confirmer au besoin." : "À confirmer.")),
+    instructionUrl: String(row.manual_service_url ?? "") || undefined,
+    partsUrl: String(row.parts_url ?? "") || undefined,
+    originalLabelsPreserved: String(row.original_labels_preserved ?? ""),
+    alternateNames: String(row.alternate_names ?? ""),
+    reclassificationAction: String(row.reclassification_action ?? ""),
+    isCustom,
+    image: publicPath ? {
+      publicPath,
+      visualMatch: String(row.image_visual_match ?? ""),
+      sourceUrl: String(row.image_source_url ?? ""),
+      sourceEvidenceType: String(row.image_source_evidence_type ?? ""),
+      useNote: String(row.image_use_note ?? ""),
+      publicationRecommendation: String(row.image_publication_recommendation ?? ""),
+      rightsAttribution: String(row.image_rights_attribution ?? ""),
+    } : undefined,
+  };
+}
+
+async function listMachines(db: D1Database) {
+  const records = await db.prepare(`SELECT f.*, i.public_path AS image_public_path, i.visual_match AS image_visual_match, i.source_url AS image_source_url, i.source_evidence_type AS image_source_evidence_type, i.use_note AS image_use_note, i.publication_recommendation AS image_publication_recommendation, i.rights_attribution AS image_rights_attribution FROM machine_families f LEFT JOIN machine_images i ON i.master_family_id = f.master_family_id ORDER BY f.is_custom, f.suggested_production_step_french, f.manufacturer, f.canonical_model`).all<D1Row>();
+  return json({ machines: records.results.map(machineFromRow) });
+}
+
+async function createMachine(request: Request, db: D1Database) {
+  const body = await request.json<Record<string, unknown>>();
+  const manufacturer = text(body.manufacturer);
+  const canonicalModel = text(body.model);
+  const stage = text(body.stage);
+  if (!manufacturer || !canonicalModel) return json({ error: "La marque et le modèle sont requis." }, 400);
+  if (stage && !machineStages.has(stage)) return json({ error: "Choisissez une étape de production valide." }, 400);
+  const id = `M-AJOUT-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  const alternateNames = text(body.alternateNames);
+  await db.prepare(`INSERT INTO machine_families (master_family_id, manufacturer, canonical_model, suggested_production_step_french, manual_service_url, parts_url, alternate_names, search_term, machine_status, is_custom, current_research_status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)`)
+    .bind(id, manufacturer, canonicalModel, stage || "Assemblage — couture principale", text(body.instructionUrl), text(body.partsUrl), alternateNames, [canonicalModel, alternateNames].filter(Boolean).join(" | "), "à confirmer", "Ajoutée par l’équipe — à confirmer au besoin.").run();
+  const row = await db.prepare("SELECT f.*, '' AS image_public_path FROM machine_families f WHERE f.master_family_id = ?").bind(id).first<D1Row>();
+  return json({ machine: row && machineFromRow(row) }, 201);
+}
+
+async function updateMachine(request: Request, db: D1Database, id: string) {
+  const body = await request.json<Record<string, unknown>>();
+  const manufacturer = text(body.manufacturer);
+  const canonicalModel = text(body.model);
+  const stage = text(body.stage);
+  if (!manufacturer || !canonicalModel) return json({ error: "La marque et le modèle sont requis." }, 400);
+  if (stage && !machineStages.has(stage)) return json({ error: "Choisissez une étape de production valide." }, 400);
+  const existing = await db.prepare("SELECT master_family_id FROM machine_families WHERE master_family_id = ?").bind(id).first<D1Row>();
+  if (!existing) return json({ error: "Cette machine est introuvable." }, 404);
+  const alternateNames = text(body.alternateNames);
+  await db.prepare(`UPDATE machine_families SET manufacturer = ?, canonical_model = ?, suggested_production_step_french = ?, manual_service_url = ?, parts_url = ?, alternate_names = ?, search_term = ?, updated_at = CURRENT_TIMESTAMP WHERE master_family_id = ?`)
+    .bind(manufacturer, canonicalModel, stage || "Assemblage — couture principale", text(body.instructionUrl), text(body.partsUrl), alternateNames, [canonicalModel, alternateNames].filter(Boolean).join(" | "), id).run();
+  const row = await db.prepare(`SELECT f.*, i.public_path AS image_public_path, i.visual_match AS image_visual_match, i.source_url AS image_source_url, i.source_evidence_type AS image_source_evidence_type, i.use_note AS image_use_note, i.publication_recommendation AS image_publication_recommendation, i.rights_attribution AS image_rights_attribution FROM machine_families f LEFT JOIN machine_images i ON i.master_family_id = f.master_family_id WHERE f.master_family_id = ?`).bind(id).first<D1Row>();
+  return json({ machine: row && machineFromRow(row) });
+}
+
+async function uploadMachineImage(request: Request, env: Env, id: string) {
+  if (!env.INVOICES) return json({ error: "Le stockage sécurisé des images n’est pas encore disponible." }, 503);
+  const exists = await env.DB.prepare("SELECT master_family_id FROM machine_families WHERE master_family_id = ?").bind(id).first<D1Row>();
+  if (!exists) return json({ error: "Cette machine est introuvable." }, 404);
+  const file = (await request.formData()).get("file");
+  if (!(file instanceof File)) return json({ error: "Choisissez une image." }, 400);
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+  if (!allowed.has(file.type) && !["jpg", "jpeg", "png", "webp"].includes(extension)) return json({ error: "Choisissez une image JPG, PNG ou WebP." }, 400);
+  if (file.size === 0 || file.size > 10 * 1024 * 1024) return json({ error: "L’image doit faire au plus 10 Mo." }, 400);
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const objectKey = `machine-images/${id}/${crypto.randomUUID()}-${safeName}`;
+  const contentType = allowed.has(file.type) ? file.type : `image/${extension === "jpg" ? "jpeg" : extension}`;
+  await env.INVOICES.put(objectKey, file.stream(), { httpMetadata: { contentType } });
+  const publicPath = `/api/machines/${encodeURIComponent(id)}/image`;
+  const existingImage = await env.DB.prepare("SELECT master_family_id FROM machine_images WHERE master_family_id = ?").bind(id).first<D1Row>();
+  if (existingImage) {
+    await env.DB.prepare(`UPDATE machine_images SET local_image_filename = ?, local_relative_path = '', public_path = ?, object_key = ?, is_user_supplied = 1, visual_match = ?, source_url = '', source_evidence_type = ?, use_note = ?, publication_recommendation = '', rights_attribution = '' WHERE master_family_id = ?`)
+      .bind(file.name, publicPath, objectKey, "Photo ajoutée par l’équipe", "Photo ajoutée par l’équipe", "Photo téléversée dans l’outil d’inventaire.", id).run();
+  } else {
+    await env.DB.prepare(`INSERT INTO machine_images (master_family_id, local_image_filename, public_path, object_key, is_user_supplied, visual_match, source_evidence_type, use_note) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`)
+      .bind(id, file.name, publicPath, objectKey, "Photo ajoutée par l’équipe", "Photo ajoutée par l’équipe", "Photo téléversée dans l’outil d’inventaire.").run();
+  }
+  return json({ ok: true, publicPath });
+}
+
+async function machineImage(env: Env, id: string) {
+  if (!env.INVOICES) return json({ error: "Le stockage sécurisé des images n’est pas disponible." }, 503);
+  const image = await env.DB.prepare("SELECT object_key FROM machine_images WHERE master_family_id = ?").bind(id).first<D1Row>();
+  const objectKey = String(image?.object_key ?? "");
+  if (!objectKey) return json({ error: "Aucune image téléversée pour cette machine." }, 404);
+  const object = await env.INVOICES.get(objectKey);
+  if (!object) return json({ error: "L’image est introuvable." }, 404);
+  return new Response(object.body, { headers: { "content-type": object.httpMetadata?.contentType ?? "application/octet-stream", "cache-control": "private, max-age=3600" } });
+}
+
 async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
   await initialize(env.DB);
+  if (url.pathname === "/api/machines" && request.method === "GET") return listMachines(env.DB);
+  if (url.pathname === "/api/machines" && request.method === "POST") return createMachine(request, env.DB);
+  const machineImageMatch = url.pathname.match(/^\/api\/machines\/([^/]+)\/image$/);
+  if (machineImageMatch && request.method === "GET") return machineImage(env, decodeURIComponent(machineImageMatch[1]));
+  if (machineImageMatch && request.method === "POST") return uploadMachineImage(request, env, decodeURIComponent(machineImageMatch[1]));
+  const machineMatch = url.pathname.match(/^\/api\/machines\/([^/]+)$/);
+  if (machineMatch && request.method === "PATCH") return updateMachine(request, env.DB, decodeURIComponent(machineMatch[1]));
+  if (url.pathname === "/api/suppliers" && request.method === "GET") {
+    const supplier = url.searchParams.get("supplier")?.trim() ?? "";
+    if (supplier) {
+      const records = await env.DB.prepare("SELECT * FROM inventory_items WHERE TRIM(supplier_name) = ? COLLATE NOCASE ORDER BY description ASC, id ASC").bind(supplier).all<D1Row>();
+      return json({ supplier, items: records.results.map(item) });
+    }
+    const suppliers = await env.DB.prepare(`SELECT TRIM(supplier_name) AS name, GROUP_CONCAT(DISTINCT NULLIF(TRIM(supplier_category_code), '')) AS codes, COUNT(*) AS product_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand, COALESCE(SUM(CASE WHEN quantity_on_hand > 0 THEN quantity_on_hand * last_cost ELSE 0 END), 0) AS inventory_value FROM inventory_items WHERE TRIM(supplier_name) <> '' GROUP BY TRIM(supplier_name) COLLATE NOCASE ORDER BY name COLLATE NOCASE`).all<D1Row>();
+    return json({ suppliers: suppliers.results.map((row) => ({ name: String(row.name), codes: String(row.codes ?? "").split(",").map((value) => value.trim()).filter(Boolean), productCount: Number(row.product_count ?? 0), unitsOnHand: Number(row.units_on_hand ?? 0), inventoryValue: Number(row.inventory_value ?? 0) })) });
+  }
   if (url.pathname === "/api/inventory" && request.method === "GET") {
     const search = url.searchParams.get("search")?.trim() ?? "";
     const term = `%${search}%`;
     const sortColumn = inventorySortColumns[url.searchParams.get("sort") ?? ""] ?? "description";
     const direction = url.searchParams.get("direction") === "desc" ? "DESC" : "ASC";
-    const records = search
-      ? await env.DB.prepare(`SELECT * FROM inventory_items WHERE legacy_reference LIKE ? OR supplier_part_number LIKE ? OR description LIKE ? OR supplier_name LIKE ? OR location LIKE ? OR machine_model LIKE ? ORDER BY ${sortColumn} ${direction}, id ASC LIMIT 500`).bind(term, term, term, term, term, term).all<D1Row>()
-      : await env.DB.prepare(`SELECT * FROM inventory_items ORDER BY ${sortColumn} ${direction}, id ASC LIMIT 500`).all<D1Row>();
-    const totals = await env.DB.prepare("SELECT COUNT(*) AS product_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand, COALESCE(SUM(CASE WHEN quantity_on_hand = 0 THEN 1 ELSE 0 END), 0) AS zero_stock_count, COUNT(DISTINCT supplier_name) AS supplier_count, COALESCE(SUM(CASE WHEN TRIM(supplier_part_number) <> '' THEN 1 ELSE 0 END), 0) AS supplier_part_number_count, COALESCE(SUM(CASE WHEN quantity_on_hand > 0 THEN quantity_on_hand * last_cost ELSE 0 END), 0) AS inventory_value_at_last_cost FROM inventory_items").first<D1Row>();
+    const machineId = url.searchParams.get("machineId")?.trim() ?? "";
+    const machineBrand = url.searchParams.get("machineBrand")?.trim() ?? "";
+    const location = url.searchParams.get("location")?.trim() ?? "";
+    const selectedMachines = machineId
+      ? machineCatalog.filter((machine) => machine.id === machineId)
+      : machineBrand ? machineCatalog.filter((machine) => machine.manufacturer === machineBrand) : [];
+    const linkedMachine = machineId
+      ? await env.DB.prepare("SELECT canonical_model, alternate_names, search_term FROM machine_families WHERE master_family_id = ?").bind(machineId).first<D1Row>()
+      : null;
+    const databaseTerms = linkedMachine
+      ? [String(linkedMachine.canonical_model ?? ""), String(linkedMachine.alternate_names ?? ""), String(linkedMachine.search_term ?? "")].flatMap((value) => value.split(/[|,;\n]/)).map((term) => term.trim())
+      : [];
+    const machineTerms = [...new Set([...selectedMachines.flatMap((machine) => machine.searchTerms ?? [machine.searchTerm]), ...databaseTerms].map((term) => term.trim()).filter(Boolean))];
+    const filters: string[] = [];
+    const values: string[] = [];
+    if (search) {
+      filters.push("(legacy_reference LIKE ? OR supplier_part_number LIKE ? OR description LIKE ? OR supplier_name LIKE ? OR location LIKE ? OR machine_model LIKE ?)");
+      values.push(term, term, term, term, term, term);
+    }
+    if (machineTerms.length) {
+      const normalizedColumn = "UPPER(REPLACE(REPLACE(REPLACE(REPLACE(machine_model, '-', ''), '.', ''), '/', ''), ' ', ''))";
+      filters.push(`(${machineTerms.map(() => `${normalizedColumn} LIKE ?`).join(" OR ")})`);
+      values.push(...machineTerms.map((value) => `%${normalizedMachineTerm(value)}%`));
+    }
+    if (location) {
+      filters.push("location = ?");
+      values.push(location);
+    }
+    const query = `SELECT * FROM inventory_items${filters.length ? ` WHERE ${filters.join(" AND ")}` : ""} ORDER BY ${sortColumn} ${direction}, id ASC LIMIT 500`;
+    const records = values.length
+      ? await env.DB.prepare(query).bind(...values).all<D1Row>()
+      : await env.DB.prepare(query).all<D1Row>();
+    const totals = await env.DB.prepare("SELECT COUNT(*) AS product_count, COALESCE(SUM(quantity_on_hand), 0) AS units_on_hand, COALESCE(SUM(CASE WHEN quantity_on_hand = 0 THEN 1 ELSE 0 END), 0) AS zero_stock_count, COUNT(DISTINCT CASE WHEN TRIM(supplier_name) <> '' THEN UPPER(TRIM(supplier_name)) END) AS supplier_count, COALESCE(SUM(CASE WHEN TRIM(supplier_part_number) <> '' THEN 1 ELSE 0 END), 0) AS supplier_part_number_count, COALESCE(SUM(CASE WHEN quantity_on_hand > 0 THEN quantity_on_hand * last_cost ELSE 0 END), 0) AS inventory_value_at_last_cost FROM inventory_items").first<D1Row>();
     return json({ items: records.results.map(item), summary: { productCount: Number(totals?.product_count ?? 0), unitsOnHand: Number(totals?.units_on_hand ?? 0), zeroStockCount: Number(totals?.zero_stock_count ?? 0), supplierCount: Number(totals?.supplier_count ?? 0), supplierPartNumberCount: Number(totals?.supplier_part_number_count ?? 0), inventoryValueAtLastCost: Number(totals?.inventory_value_at_last_cost ?? 0) } });
   }
   if (url.pathname === "/api/activity" && request.method === "GET") {
