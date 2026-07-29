@@ -43,6 +43,20 @@
       "when": 1785280589921,
       "tag": "0005_elite_longshot",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785341338067,
+      "tag": "0006_parallel_greymalkin",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785342056390,
+      "tag": "0007_faulty_ego",
+      "breakpoints": true
     }
   ]
 }
