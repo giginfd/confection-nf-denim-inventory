@@ -141,7 +141,7 @@ export default function SuppliersWorkspace() {
   return <main className="shell">
     <AppNavigation active="suppliers" />
     <section className="supplier-hero">
-      <div><p className="eyebrow">Achats / Suppliers</p><h1>Fournisseurs</h1><p>Consultez les fournisseurs récupérés, leurs coordonnées, leur état et les pièces qui leur sont associées.</p></div>
+      <div><p className="eyebrow">Achats</p><h1>Fournisseurs</h1><p>Consultez les fournisseurs récupérés, leurs coordonnées, leur état et les pièces qui leur sont associées.</p></div>
       <a className="secondary supplier-back-link" href="/">Retour à l’inventaire</a>
     </section>
 
@@ -191,4 +191,3 @@ export default function SuppliersWorkspace() {
     </section></div>}
   </main>;
 }
-

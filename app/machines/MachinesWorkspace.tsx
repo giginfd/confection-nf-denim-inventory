@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import AppNavigation from "../components/AppNavigation";
-import { machineCatalog, productionStages, type MachineCatalogEntry, type MachineStage } from "../lib/machine-catalog";
+import { machineCatalog, machineIdAliases, productionStages, type MachineCatalogEntry, type MachineStage } from "../lib/machine-catalog";
 
 const statusLabel = {
   "confirmé": "Confirmé",
@@ -93,6 +93,7 @@ export default function MachinesWorkspace() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [editorError, setEditorError] = useState("");
+  const [mergeTargetId, setMergeTargetId] = useState("");
 
   async function loadMachines(selectId?: string) {
     const response = await fetch("/api/machines");
@@ -100,7 +101,8 @@ export default function MachinesWorkspace() {
     const data = await response.json() as { machines?: MachineCatalogEntry[] };
     if (!Array.isArray(data.machines)) return;
     setCatalog(data.machines);
-    const desiredId = selectId ?? new URLSearchParams(window.location.search).get("machine")?.trim();
+    const requestedId = selectId ?? new URLSearchParams(window.location.search).get("machine")?.trim();
+    const desiredId = requestedId ? machineIdAliases[requestedId] ?? requestedId : "";
     if (desiredId) {
       const matchingMachine = data.machines.find((machine) => machine.id === desiredId);
       if (matchingMachine) setSelected(matchingMachine);
@@ -110,7 +112,8 @@ export default function MachinesWorkspace() {
   useEffect(() => { void loadMachines(); }, []);
 
   useEffect(() => {
-    const machineId = new URLSearchParams(window.location.search).get("machine")?.trim();
+    const requestedId = new URLSearchParams(window.location.search).get("machine")?.trim() ?? "";
+    const machineId = machineIdAliases[requestedId] ?? requestedId;
     const machine = catalog.find((entry) => entry.id === machineId);
     if (machine) setSelected(machine);
   }, [catalog]);
@@ -129,6 +132,7 @@ export default function MachinesWorkspace() {
     setForm(blankMachineForm);
     setImageFile(null);
     setEditorError("");
+    setMergeTargetId("");
     setEditorMode("new");
   }
 
@@ -138,6 +142,7 @@ export default function MachinesWorkspace() {
     setForm(formForMachine(machine));
     setImageFile(null);
     setEditorError("");
+    setMergeTargetId("");
     setEditorMode("edit");
   }
 
@@ -192,20 +197,45 @@ export default function MachinesWorkspace() {
     }
   }
 
+  async function mergeMachine() {
+    if (!editingMachine || !mergeTargetId) return;
+    const target = catalog.find((machine) => machine.id === mergeTargetId);
+    if (!target) return;
+    const approved = window.confirm(`Regrouper « ${editingMachine.manufacturer} ${editingMachine.model} » avec « ${target.manufacturer} ${target.model} » ?\n\nLa première fiche sera cachée de la liste. Ses anciens noms, documents et références resteront conservés; les pièces d’inventaire ne seront pas supprimées.`);
+    if (!approved) return;
+    setSaving(true);
+    setEditorError("");
+    try {
+      const response = await fetch(`/api/machines/${encodeURIComponent(editingMachine.id)}/merge`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ targetId: mergeTargetId }),
+      });
+      const data = await response.json() as { error?: string; machine?: MachineCatalogEntry };
+      if (!response.ok || !data.machine) throw new Error(data.error ?? "Impossible de regrouper les machines.");
+      setEditorMode(null);
+      setEditingMachine(null);
+      await loadMachines(data.machine.id);
+    } catch (error) {
+      setEditorError(error instanceof Error ? error.message : "Impossible de regrouper les machines.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return <main className="shell">
     <AppNavigation active="machines" />
     <section className="machines-hero">
       <div>
-        <p className="eyebrow">Atelier / Equipment</p>
+        <p className="eyebrow">Atelier</p>
         <h1>Machines et équipements</h1>
       </div>
       <div className="machine-hero-actions"><div className="machine-hero-stats"><strong>{catalog.length}</strong><span>machines et équipements</span></div><button className="primary" onClick={openNewMachine}>Nouvelle machine / équipement</button></div>
     </section>
 
-    <section className="machine-filters" aria-label="Filtres des machines">
-      <label className="machine-search"><span>Rechercher</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Marque, modèle, autre nom ou rôle" /></label>
-      <div className="filter-section"><strong>Étape de production</strong><div className="filter-chips"><button className={stage === "Toutes" ? "active" : ""} onClick={() => setStage("Toutes")}>Toutes</button>{productionStages.map((value) => <button key={value} className={stage === value ? "active" : ""} onClick={() => setStage(value)}>{value}</button>)}</div></div>
-      <div className="filter-section"><strong>Marque</strong><div className="filter-chips brand-filter-chips"><button className={brand === "Toutes" ? "active" : ""} onClick={() => setBrand("Toutes")}>Toutes</button>{brands.map((value) => <BrandFilterChip key={value} brand={value} active={brand === value} onSelect={() => setBrand(value)} />)}</div></div>
+    <section className="machine-filters" aria-label="Recherche de machines">
+      <div className="machine-filter-row"><label className="machine-search"><span>Rechercher une machine</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Marque, modèle, nom ou rôle" /></label><label className="machine-stage-filter"><span>Étape de production</span><select value={stage} onChange={(event) => setStage(event.target.value as MachineStage | "Toutes")}><option value="Toutes">Toutes les étapes</option>{productionStages.map((value) => <option key={value} value={value}>{value}</option>)}</select></label></div>
+      <div className="filter-section machine-brand-filter"><strong>Marque</strong><div className="filter-chips brand-filter-chips"><button className={brand === "Toutes" ? "active" : ""} onClick={() => setBrand("Toutes")}>Toutes</button>{brands.map((value) => <BrandFilterChip key={value} brand={value} active={brand === value} onSelect={() => setBrand(value)} />)}</div></div>
     </section>
 
     <p className="machine-results">{machines.length} famille{machines.length === 1 ? "" : "s"} affichée{machines.length === 1 ? "" : "s"}. Les nombres de pièces sont des associations de recherche, pas une confirmation que chaque pièce convient à chaque sous-modèle.</p>
@@ -221,6 +251,6 @@ export default function MachinesWorkspace() {
 
     {selected && <div className="modal-backdrop" role="presentation" onMouseDown={() => setSelected(null)}><section className="editor machine-detail" role="dialog" aria-modal="true" aria-label={`Détails de ${selected.manufacturer} ${selected.model}`} onMouseDown={(event) => event.stopPropagation()}><div className="editor-heading"><div><p className="eyebrow">{selected.manufacturer}</p><h2>{selected.model}</h2></div><button className="close" aria-label="Fermer" onClick={() => setSelected(null)}>×</button></div>{selected.image && <figure className="machine-detail-image"><img src={selected.image.publicPath} alt={`Référence visuelle : ${selected.manufacturer} ${selected.model}`} /><figcaption>{visualCaption(selected)}</figcaption></figure>}<p className={`machine-detail-status ${selected.status.replaceAll(" ", "-")}`}>{statusLabel[selected.status]}</p><dl><div><dt>Étape de production</dt><dd>{selected.stage}</dd></div><div><dt>Fiches liées par la recherche</dt><dd>{selected.linkedRecords.toLocaleString("fr-CA")}</dd></div><div><dt>État de la recherche</dt><dd>{selected.note}</dd></div>{selected.alternateNames && <div><dt>Autres noms</dt><dd>{selected.alternateNames}</dd></div>}{selected.originalLabelsPreserved && <div><dt>Libellés d’origine conservés</dt><dd>{selected.originalLabelsPreserved}</dd></div>}</dl><div className="machine-documents">{selected.instructionUrl && <a className="machine-link document-link" href={selected.instructionUrl} target="_blank" rel="noreferrer">Ouvrir le manuel d’instructions</a>}{selected.partsUrl && <a className="machine-link document-link" href={selected.partsUrl} target="_blank" rel="noreferrer">Ouvrir le livre de pièces</a>}</div><div className="machine-detail-actions"><button className="secondary" onClick={() => openEditMachine(selected)}>Modifier cette machine</button><a className="primary machine-detail-link" href={inventoryLink(selected)}>Rechercher les pièces dans l’inventaire</a></div></section></div>}
 
-    {editorMode && <div className="modal-backdrop" role="presentation" onMouseDown={() => !saving && setEditorMode(null)}><section className="editor machine-editor" role="dialog" aria-modal="true" aria-label={editorMode === "new" ? "Nouvelle machine" : "Modifier une machine"} onMouseDown={(event) => event.stopPropagation()}><div className="editor-heading"><div><p className="eyebrow">Machines et équipements</p><h2>{editorMode === "new" ? "Nouvelle machine / équipement" : "Modifier la machine"}</h2></div><button className="close" aria-label="Fermer" disabled={saving} onClick={() => setEditorMode(null)}>×</button></div><p className="workflow-intro">Ajoutez ou corrigez la fiche sans modifier les pièces dans l’inventaire.</p>{editorError && <p className="form-error">{editorError}</p>}<div className="form-grid"><label className="field"><span>Marque *</span><input value={form.manufacturer} onChange={(event) => setForm({ ...form, manufacturer: event.target.value })} placeholder="Ex. Juki" /></label><label className="field"><span>Modèle *</span><input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="Ex. LK-980" /></label><label className="field full"><span>Autres noms / ancien nom</span><input value={form.alternateNames} onChange={(event) => setForm({ ...form, alternateNames: event.target.value })} placeholder="Ex. surnom utilisé dans l’atelier" /></label><label className="field"><span>Étape de production</span><select value={form.stage} onChange={(event) => setForm({ ...form, stage: event.target.value as MachineStage })}>{productionStages.map((value) => <option key={value}>{value}</option>)}</select></label><label className="field"><span>Photo de la machine</span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setImageFile(event.target.files?.[0] ?? null)} />{imageFile && <small>{imageFile.name}</small>}</label><label className="field full"><span>Lien du manuel d’instructions</span><input type="url" value={form.instructionUrl} onChange={(event) => setForm({ ...form, instructionUrl: event.target.value })} placeholder="https://..." /></label><label className="field full"><span>Lien du livre de pièces</span><input type="url" value={form.partsUrl} onChange={(event) => setForm({ ...form, partsUrl: event.target.value })} placeholder="https://..." /></label></div><div className="form-actions">{editorMode === "edit" && <button className="danger" disabled={saving} onClick={() => void deleteMachine()}>Supprimer cette machine</button>}<span className="form-actions-spacer" /><button className="secondary" disabled={saving} onClick={() => setEditorMode(null)}>Annuler</button><button className="primary" disabled={saving} onClick={() => void saveMachine()}>{saving ? "Enregistrement…" : editorMode === "new" ? "Ajouter la machine" : "Enregistrer les modifications"}</button></div></section></div>}
+    {editorMode && <div className="modal-backdrop" role="presentation" onMouseDown={() => !saving && setEditorMode(null)}><section className="editor machine-editor" role="dialog" aria-modal="true" aria-label={editorMode === "new" ? "Nouvelle machine" : "Modifier une machine"} onMouseDown={(event) => event.stopPropagation()}><div className="editor-heading"><div><p className="eyebrow">Machines et équipements</p><h2>{editorMode === "new" ? "Nouvelle machine / équipement" : "Modifier la machine"}</h2></div><button className="close" aria-label="Fermer" disabled={saving} onClick={() => setEditorMode(null)}>×</button></div><p className="workflow-intro">Ajoutez ou corrigez la fiche sans modifier les pièces dans l’inventaire.</p>{editorError && <p className="form-error">{editorError}</p>}<div className="form-grid"><label className="field"><span>Marque *</span><input value={form.manufacturer} onChange={(event) => setForm({ ...form, manufacturer: event.target.value })} placeholder="Ex. Juki" /></label><label className="field"><span>Modèle *</span><input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="Ex. LK-980" /></label><label className="field full"><span>Autres noms / ancien nom</span><input value={form.alternateNames} onChange={(event) => setForm({ ...form, alternateNames: event.target.value })} placeholder="Ex. surnom utilisé dans l’atelier" /></label><label className="field"><span>Étape de production</span><select value={form.stage} onChange={(event) => setForm({ ...form, stage: event.target.value as MachineStage })}>{productionStages.map((value) => <option key={value}>{value}</option>)}</select></label><label className="field"><span>Photo de la machine</span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setImageFile(event.target.files?.[0] ?? null)} />{imageFile && <small>{imageFile.name}</small>}</label><label className="field full"><span>Lien du manuel d’instructions</span><input type="url" value={form.instructionUrl} onChange={(event) => setForm({ ...form, instructionUrl: event.target.value })} placeholder="https://..." /></label><label className="field full"><span>Lien du livre de pièces</span><input type="url" value={form.partsUrl} onChange={(event) => setForm({ ...form, partsUrl: event.target.value })} placeholder="https://..." /></label></div>{editorMode === "edit" && <section className="machine-merge"><div><strong>Regrouper avec une autre machine</strong><p>Utilisez ceci seulement si les deux fiches décrivent le même équipement ou la même famille. La fiche choisie ici sera cachée, mais ses noms et ses liens resteront conservés.</p></div><div className="machine-merge-controls"><select value={mergeTargetId} onChange={(event) => setMergeTargetId(event.target.value)}><option value="">Choisir la machine à conserver…</option>{catalog.filter((machine) => machine.id !== editingMachine?.id).sort((a, b) => `${a.manufacturer} ${a.model}`.localeCompare(`${b.manufacturer} ${b.model}`, "fr-CA")).map((machine) => <option key={machine.id} value={machine.id}>{machine.manufacturer} · {machine.model}</option>)}</select><button type="button" className="secondary" disabled={saving || !mergeTargetId} onClick={() => void mergeMachine()}>Regrouper les machines</button></div></section>}<div className="form-actions">{editorMode === "edit" && <button className="danger" disabled={saving} onClick={() => void deleteMachine()}>Supprimer cette machine</button>}<span className="form-actions-spacer" /><button className="secondary" disabled={saving} onClick={() => setEditorMode(null)}>Annuler</button><button className="primary" disabled={saving} onClick={() => void saveMachine()}>{saving ? "Enregistrement…" : editorMode === "new" ? "Ajouter la machine" : "Enregistrer les modifications"}</button></div></section></div>}
   </main>;
 }

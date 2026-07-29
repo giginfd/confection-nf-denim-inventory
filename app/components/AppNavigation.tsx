@@ -22,9 +22,9 @@ export default function AppNavigation({ active }: { active: "inventory" | "locat
     <nav className="top-nav" aria-label="Navigation principale">
       <span className="time-stamp">{label} ET</span>
       <div className="nav-links">
-        <a className={active === "inventory" ? "active" : ""} href="/">Inventaire</a>
-        <a className={active === "locations" ? "active" : ""} href="/emplacements">Plan des emplacements</a>
-        <a className={active === "machines" ? "active" : ""} href="/machines">Machines et équipements</a>
+        <a className={`inventory-nav-link ${active === "inventory" ? "active" : ""}`} href="/"><span className="mobile-exit-icon" aria-hidden="true">↩</span><span className="desktop-nav-label">Inventaire</span><span className="mobile-nav-label">Retour à l’inventaire</span></a>
+        <a className={active === "locations" ? "active" : ""} href="/emplacements">Emplacements</a>
+        <a className={active === "machines" ? "active" : ""} href="/machines">Machines</a>
         <a className={active === "suppliers" ? "active" : ""} href="/fournisseurs">Fournisseurs</a>
       </div>
     </nav>

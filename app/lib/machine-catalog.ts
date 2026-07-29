@@ -230,6 +230,39 @@ const researchMachineCatalog: MachineCatalogEntry[] = initialMachineCatalog.map(
   };
 });
 
+// The DM and DN records are variants of the same Union Special 35800 machine
+// family. The recovered "COUPE FILS 35800" / "CHAIN CUTTER" labels identify
+// an attachment for that family, not a separate sewing head. Keep every source
+// label searchable, while presenting one clear family in the application.
+const mergedUnionSpecial35800Ids = new Set(["M-017", "M-025", "M-041"]);
+const unionSpecial35800Entries = researchMachineCatalog.filter((entry) => mergedUnionSpecial35800Ids.has(entry.id));
+const unionSpecial35800Dm = unionSpecial35800Entries.find((entry) => entry.id === "M-017")!;
+const unionSpecial35800Series: MachineCatalogEntry = {
+  id: "M-35800",
+  masterFamilyId: "M-35800",
+  manufacturer: "Union Special",
+  model: "Série 35800 (DM / DN)",
+  stage: unionSpecial35800Dm.stage,
+  linkedRecords: unionSpecial35800Entries.reduce((total, entry) => total + entry.linkedRecords, 0),
+  status: "confirmé",
+  searchTerm: "35800",
+  searchTerms: [...new Set(unionSpecial35800Entries.flatMap((entry) => [entry.model, entry.searchTerm, ...(entry.searchTerms ?? []), ...(entry.originalLabelsPreserved ?? "").split("|")]).map((term) => term.trim()).filter(Boolean))],
+  alternateNames: "35800DM | 35800DN | COUPE FILS 35800 | US 35800 CHAIN CUTTER",
+  originalLabelsPreserved: unionSpecial35800Entries.map((entry) => entry.originalLabelsPreserved ?? "").filter(Boolean).join(" | "),
+  note: "Famille regroupée : 35800DM et 35800DN sont des variantes de la même machine. Le coupe-fils de chaîne est un attachement associé, non une machine distincte.",
+  instructionUrl: unionSpecial35800Dm.instructionUrl,
+  partsUrl: unionSpecial35800Dm.partsUrl,
+  image: unionSpecial35800Dm.image,
+};
+
+// Older links remain valid and resolve to the unified family.
+export const machineIdAliases: Record<string, string> = {
+  "M-017": "M-35800",
+  "M-025": "M-35800",
+  "M-041": "M-35800",
+};
+export const hiddenMachineFamilyIds = [...mergedUnionSpecial35800Ids];
+
 // AMCO is confirmed as a shared drive system, rather than a sewing head. It is
 // intentionally not attached to Juki, Union Special, or any other host machine
 // until an installed motor/nameplate proves that relationship.
@@ -252,7 +285,11 @@ const sharedEquipmentCatalog: MachineCatalogEntry[] = [
   },
 ];
 
-export const machineCatalog: MachineCatalogEntry[] = [...researchMachineCatalog, ...sharedEquipmentCatalog];
+export const machineCatalog: MachineCatalogEntry[] = [
+  ...researchMachineCatalog.filter((entry) => !mergedUnionSpecial35800Ids.has(entry.id)),
+  unionSpecial35800Series,
+  ...sharedEquipmentCatalog,
+];
 
 export const productionStages: MachineStage[] = [
   "Coupe / préparation matière",

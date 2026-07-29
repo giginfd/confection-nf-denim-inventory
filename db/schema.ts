@@ -32,6 +32,15 @@ export const inventoryChanges = sqliteTable("inventory_changes", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const inventoryDataImports = sqliteTable("inventory_data_imports", {
+  importKey: text("import_key").primaryKey(),
+  sourceName: text("source_name").notNull(),
+  matchedCount: integer("matched_count").notNull().default(0),
+  conflictCount: integer("conflict_count").notNull().default(0),
+  missingCount: integer("missing_count").notNull().default(0),
+  importedAt: text("imported_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const stockMovements = sqliteTable("stock_movements", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   inventoryId: integer("inventory_id").notNull(),

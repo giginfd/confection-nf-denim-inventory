@@ -3,11 +3,12 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { runWithExecutionContext } from "vinext/shims/request-context";
 import { inventorySeed } from "../app/lib/inventory-seed";
-import { machineCatalog, productionStages, type MachineCatalogEntry, type MachineStage, type MachineStatus } from "../app/lib/machine-catalog";
+import { hiddenMachineFamilyIds, machineCatalog, machineIdAliases, productionStages, type MachineCatalogEntry, type MachineStage, type MachineStatus } from "../app/lib/machine-catalog";
 import { machineResearchFamilies, machineResearchSnapshot } from "../app/lib/machine-research-family-seed";
 import { machineResearchImageSubmissions } from "../app/lib/machine-research-submission-seed";
 import { machineResearchLegacyLabelReviews } from "../app/lib/machine-research-review-seed";
 import { supplierContactAliases, supplierContactSeed, type SupplierContactSeed } from "../app/lib/supplier-contact-seed";
+import { supplierPartNumberSeed } from "../app/lib/supplier-part-number-seed";
 
 interface Env {
   ASSETS: Fetcher;
@@ -91,11 +92,12 @@ const initializeStatements = [
   `CREATE TABLE IF NOT EXISTS supplier_contacts (supplier_name TEXT PRIMARY KEY, supplier_code TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '', website TEXT NOT NULL DEFAULT '', status_key TEXT NOT NULL DEFAULT 'verify', status_detail TEXT NOT NULL DEFAULT '', status_note TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', verified_date TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS market_offers (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, source_name TEXT NOT NULL, listing_url TEXT NOT NULL, price REAL NOT NULL, currency TEXT NOT NULL, availability TEXT NOT NULL DEFAULT 'unknown', match_status TEXT NOT NULL DEFAULT 'possible', note TEXT NOT NULL DEFAULT '', checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS machine_research_imports (snapshot_date TEXT PRIMARY KEY, schema_version TEXT NOT NULL, package_name TEXT NOT NULL, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
-  `CREATE TABLE IF NOT EXISTS machine_families (master_family_id TEXT PRIMARY KEY, manufacturer TEXT NOT NULL, canonical_model TEXT NOT NULL, original_labels_preserved TEXT NOT NULL DEFAULT '', current_research_status TEXT NOT NULL DEFAULT '', suggested_production_step_french TEXT NOT NULL DEFAULT '', reclassification_action TEXT NOT NULL DEFAULT '', manual_service_url TEXT NOT NULL DEFAULT '', parts_url TEXT NOT NULL DEFAULT '', alternate_names TEXT NOT NULL DEFAULT '', search_term TEXT NOT NULL DEFAULT '', machine_status TEXT NOT NULL DEFAULT 'à confirmer', is_custom INTEGER NOT NULL DEFAULT 0, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT '')`,
+  `CREATE TABLE IF NOT EXISTS machine_families (master_family_id TEXT PRIMARY KEY, manufacturer TEXT NOT NULL, canonical_model TEXT NOT NULL, original_labels_preserved TEXT NOT NULL DEFAULT '', current_research_status TEXT NOT NULL DEFAULT '', suggested_production_step_french TEXT NOT NULL DEFAULT '', reclassification_action TEXT NOT NULL DEFAULT '', manual_service_url TEXT NOT NULL DEFAULT '', parts_url TEXT NOT NULL DEFAULT '', alternate_names TEXT NOT NULL DEFAULT '', search_term TEXT NOT NULL DEFAULT '', machine_status TEXT NOT NULL DEFAULT 'à confirmer', is_custom INTEGER NOT NULL DEFAULT 0, merged_into_machine_id TEXT NOT NULL DEFAULT '', linked_record_override INTEGER NOT NULL DEFAULT -1, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT '')`,
   `CREATE TABLE IF NOT EXISTS machine_images (master_family_id TEXT PRIMARY KEY, manufacturer TEXT NOT NULL DEFAULT '', canonical_model_equipment TEXT NOT NULL DEFAULT '', original_legacy_labels_preserved TEXT NOT NULL DEFAULT '', production_step_french TEXT NOT NULL DEFAULT '', research_status TEXT NOT NULL DEFAULT '', local_image_filename TEXT NOT NULL, local_relative_path TEXT NOT NULL DEFAULT '', public_path TEXT NOT NULL, object_key TEXT NOT NULL DEFAULT '', is_user_supplied INTEGER NOT NULL DEFAULT 0, visual_match TEXT NOT NULL DEFAULT '', source_url TEXT NOT NULL DEFAULT '', asset_url TEXT NOT NULL DEFAULT '', source_evidence_type TEXT NOT NULL DEFAULT '', use_note TEXT NOT NULL DEFAULT '', publication_recommendation TEXT NOT NULL DEFAULT '', rights_attribution TEXT NOT NULL DEFAULT '', imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS machine_image_submissions (id INTEGER PRIMARY KEY AUTOINCREMENT, master_family_id TEXT NOT NULL, manufacturer TEXT NOT NULL DEFAULT '', model_supplied_by_user TEXT NOT NULL DEFAULT '', plate_model_visible TEXT NOT NULL DEFAULT '', supplied_filename TEXT NOT NULL DEFAULT '', local_relative_path TEXT NOT NULL DEFAULT '', library_decision TEXT NOT NULL DEFAULT '', visual_assessment TEXT NOT NULL DEFAULT '', evidence_note TEXT NOT NULL DEFAULT '', original_source_url TEXT NOT NULL DEFAULT '', rights_attribution TEXT NOT NULL DEFAULT '', date_received TEXT NOT NULL DEFAULT '', imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS legacy_label_reviews (review_id TEXT PRIMARY KEY, original_unresolved_legacy_label TEXT NOT NULL, linked_inventory_part_records INTEGER NOT NULL DEFAULT 0, unique_product_numbers INTEGER NOT NULL DEFAULT 0, possible_manufacturer_equipment_hint_source TEXT NOT NULL DEFAULT '', example_product_descriptions_source TEXT NOT NULL DEFAULT '', example_suppliers_source TEXT NOT NULL DEFAULT '', research_group_id TEXT NOT NULL DEFAULT '', likely_manufacturer_model_role TEXT NOT NULL DEFAULT '', french_ui_label TEXT NOT NULL DEFAULT '', production_step_french TEXT NOT NULL DEFAULT '', outcome_en TEXT NOT NULL DEFAULT '', verification_status_fr TEXT NOT NULL DEFAULT '', evidence_and_caution_en TEXT NOT NULL DEFAULT '', next_verification_step_en TEXT NOT NULL DEFAULT '', manual_parts_evidence_links TEXT NOT NULL DEFAULT '', page_treatment_french TEXT NOT NULL DEFAULT '', imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS machine_part_links (id INTEGER PRIMARY KEY AUTOINCREMENT, master_family_id TEXT NOT NULL, inventory_id INTEGER, legacy_reference TEXT NOT NULL DEFAULT '', relationship_type TEXT NOT NULL DEFAULT 'mentioned_with_label', confidence TEXT NOT NULL DEFAULT '', evidence_type TEXT NOT NULL DEFAULT '', evidence_reference TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS inventory_data_imports (import_key TEXT PRIMARY KEY, source_name TEXT NOT NULL, matched_count INTEGER NOT NULL DEFAULT 0, conflict_count INTEGER NOT NULL DEFAULT 0, missing_count INTEGER NOT NULL DEFAULT 0, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE INDEX IF NOT EXISTS inventory_items_description_idx ON inventory_items(description)`,
   `CREATE INDEX IF NOT EXISTS inventory_changes_created_idx ON inventory_changes(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS stock_movements_inventory_idx ON stock_movements(inventory_id)`,
@@ -118,6 +120,8 @@ async function initialize(db: D1Database) {
   await ensureColumn(db, "machine_families", "search_term", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, "machine_families", "machine_status", "TEXT NOT NULL DEFAULT 'à confirmer'");
   await ensureColumn(db, "machine_families", "is_custom", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, "machine_families", "merged_into_machine_id", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "machine_families", "linked_record_override", "INTEGER NOT NULL DEFAULT -1");
   await ensureColumn(db, "machine_families", "updated_at", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, "machine_images", "object_key", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, "machine_images", "is_user_supplied", "INTEGER NOT NULL DEFAULT 0");
@@ -130,6 +134,7 @@ async function initialize(db: D1Database) {
       await db.batch(statements);
     }
   }
+  await initializeSupplierPartNumbers(db);
   await initializeSupplierContacts(db);
   await initializeMachineResearch(db);
   await ensureCuratedMachineCatalog(db);
@@ -142,6 +147,48 @@ async function ensureColumn(db: D1Database, table: string, column: string, defin
 
 async function seedInChunks(db: D1Database, statements: D1PreparedStatement[]) {
   for (let offset = 0; offset < statements.length; offset += 100) await db.batch(statements.slice(offset, offset + 100));
+}
+
+async function initializeSupplierPartNumbers(db: D1Database) {
+  const importKey = "legacy-supplier-part-numbers-2021-v1";
+  const alreadyImported = await db.prepare("SELECT import_key FROM inventory_data_imports WHERE import_key = ?").bind(importKey).first<D1Row>();
+  if (alreadyImported) return;
+
+  await seedInChunks(db, supplierPartNumberSeed.map((entry) => db.prepare(
+    `UPDATE inventory_items
+     SET supplier_part_number = ?
+     WHERE legacy_reference = ?
+       AND supplier_category_code = ?
+       AND TRIM(supplier_part_number) = ''`
+  ).bind(entry.supplierPartNumber, entry.legacyReference, entry.supplierCategoryCode)));
+
+  const currentRows = await db.prepare(
+    "SELECT legacy_reference, supplier_category_code, supplier_part_number FROM inventory_items"
+  ).all<D1Row>();
+  const currentByReference = new Map(currentRows.results.map((row) => [String(row.legacy_reference), row]));
+  let matchedCount = 0;
+  let conflictCount = 0;
+  let missingCount = 0;
+
+  for (const recovered of supplierPartNumberSeed) {
+    const current = currentByReference.get(recovered.legacyReference);
+    if (!current || String(current.supplier_category_code) !== recovered.supplierCategoryCode) {
+      missingCount += 1;
+    } else if (String(current.supplier_part_number).trim() === recovered.supplierPartNumber) {
+      matchedCount += 1;
+    } else {
+      // A nonblank manual value is intentionally preserved for review.
+      conflictCount += 1;
+    }
+  }
+
+  await db.prepare(
+    "INSERT INTO inventory_data_imports (import_key, source_name, matched_count, conflict_count, missing_count) VALUES (?, ?, ?, ?, ?)"
+  ).bind(importKey, "2021 DETSOP alternate-key index", matchedCount, conflictCount, missingCount).run();
+
+  if (conflictCount || missingCount) {
+    console.warn(`Supplier-part recovery completed with ${conflictCount} conflict(s) and ${missingCount} missing row(s).`);
+  }
 }
 
 function supplierContactFromRow(row?: D1Row | null) {
@@ -216,6 +263,12 @@ async function ensureCuratedMachineCatalog(db: D1Database) {
     [...new Set(machine.searchTerms ?? [machine.searchTerm])].join(" | "),
     machine.status,
   )));
+  const unified35800 = machineCatalog.find((machine) => machine.id === "M-35800");
+  if (unified35800?.image) {
+    const image = unified35800.image;
+    await db.prepare(`INSERT OR IGNORE INTO machine_images (master_family_id, manufacturer, canonical_model_equipment, original_legacy_labels_preserved, production_step_french, research_status, local_image_filename, public_path, visual_match, source_url, source_evidence_type, use_note, publication_recommendation, rights_attribution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(unified35800.id, unified35800.manufacturer, unified35800.model, unified35800.originalLabelsPreserved ?? "", unified35800.stage, unified35800.note, image.publicPath.split("/").pop() ?? "", image.publicPath, image.visualMatch, image.sourceUrl, image.sourceEvidenceType, image.useNote, image.publicationRecommendation, image.rightsAttribution).run();
+  }
 }
 
 function json(data: unknown, status = 200) {
@@ -299,7 +352,7 @@ function machineFromRow(row: D1Row): MachineCatalogEntry {
     manufacturer: String(row.manufacturer),
     model: String(row.canonical_model),
     stage: (machineStages.has(String(row.suggested_production_step_french)) ? String(row.suggested_production_step_french) : "Assemblage — couture principale") as MachineStage,
-    linkedRecords: existing?.linkedRecords ?? 0,
+    linkedRecords: Number(row.linked_record_override ?? -1) >= 0 ? Number(row.linked_record_override) : existing?.linkedRecords ?? 0,
     status: isCustom && machineStatuses.has(storedStatus as MachineStatus) ? storedStatus as MachineStatus : existing?.status ?? "à confirmer",
     searchTerm: String(row.search_term || existing?.searchTerm || row.canonical_model),
     searchTerms: existing?.searchTerms ?? String(row.search_term || existing?.searchTerm || row.canonical_model).split("|").map((term) => term.trim()).filter(Boolean),
@@ -323,8 +376,56 @@ function machineFromRow(row: D1Row): MachineCatalogEntry {
 }
 
 async function listMachines(db: D1Database) {
-  const records = await db.prepare(`SELECT f.*, i.public_path AS image_public_path, i.visual_match AS image_visual_match, i.source_url AS image_source_url, i.source_evidence_type AS image_source_evidence_type, i.use_note AS image_use_note, i.publication_recommendation AS image_publication_recommendation, i.rights_attribution AS image_rights_attribution FROM machine_families f LEFT JOIN machine_images i ON i.master_family_id = f.master_family_id ORDER BY f.is_custom, f.suggested_production_step_french, f.manufacturer, f.canonical_model`).all<D1Row>();
+  const exclusions = hiddenMachineFamilyIds.map(() => "?").join(", ");
+  const records = await db.prepare(`SELECT f.*, i.public_path AS image_public_path, i.visual_match AS image_visual_match, i.source_url AS image_source_url, i.source_evidence_type AS image_source_evidence_type, i.use_note AS image_use_note, i.publication_recommendation AS image_publication_recommendation, i.rights_attribution AS image_rights_attribution FROM machine_families f LEFT JOIN machine_images i ON i.master_family_id = f.master_family_id WHERE f.master_family_id NOT IN (${exclusions}) AND COALESCE(f.merged_into_machine_id, '') = '' ORDER BY f.is_custom, f.suggested_production_step_french, f.manufacturer, f.canonical_model`).bind(...hiddenMachineFamilyIds).all<D1Row>();
   return json({ machines: records.results.map(machineFromRow) });
+}
+
+function uniqueMachineTerms(...values: string[]) {
+  const seen = new Set<string>();
+  return values.flatMap((value) => value.split(/[|,;\n]/)).map((value) => value.trim()).filter((value) => {
+    const key = value.toLocaleUpperCase("fr-CA");
+    if (!value || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join(" | ");
+}
+
+function machineRecordCount(row: D1Row) {
+  const override = Number(row.linked_record_override ?? -1);
+  if (override >= 0) return override;
+  return machineCatalog.find((machine) => machine.id === String(row.master_family_id))?.linkedRecords ?? 0;
+}
+
+async function mergeMachine(request: Request, db: D1Database, sourceId: string) {
+  const body = await request.json<Record<string, unknown>>();
+  const targetId = text(body.targetId);
+  if (!targetId || targetId === sourceId) return json({ error: "Choisissez une autre machine avec laquelle regrouper cette fiche." }, 400);
+  const [source, target] = await Promise.all([
+    db.prepare("SELECT * FROM machine_families WHERE master_family_id = ?").bind(sourceId).first<D1Row>(),
+    db.prepare("SELECT * FROM machine_families WHERE master_family_id = ?").bind(targetId).first<D1Row>(),
+  ]);
+  if (!source || !target) return json({ error: "Une des deux machines est introuvable." }, 404);
+  if (text(source.merged_into_machine_id)) return json({ error: "Cette machine est déjà regroupée avec une autre fiche." }, 400);
+  if (text(target.merged_into_machine_id)) return json({ error: "Choisissez une machine visible comme destination du regroupement." }, 400);
+
+  const mergedAliases = uniqueMachineTerms(
+    text(target.alternate_names), text(source.canonical_model), text(source.alternate_names), text(source.original_labels_preserved)
+  );
+  const mergedSearchTerms = uniqueMachineTerms(
+    text(target.canonical_model), text(target.search_term), text(source.canonical_model), text(source.search_term), text(source.alternate_names), text(source.original_labels_preserved)
+  );
+  const mergedOriginalLabels = uniqueMachineTerms(text(target.original_labels_preserved), text(source.original_labels_preserved), text(source.canonical_model), text(source.alternate_names));
+  const note = uniqueMachineTerms(text(target.current_research_status), `Regroupée avec ${text(source.manufacturer)} ${text(source.canonical_model)}; les noms et documents d’origine restent conservés.`);
+  const linkedRecordCount = machineRecordCount(target) + machineRecordCount(source);
+  await db.batch([
+    db.prepare("UPDATE machine_families SET alternate_names = ?, search_term = ?, original_labels_preserved = ?, current_research_status = ?, linked_record_override = ?, updated_at = CURRENT_TIMESTAMP WHERE master_family_id = ?")
+      .bind(mergedAliases, mergedSearchTerms, mergedOriginalLabels, note, linkedRecordCount, targetId),
+    db.prepare("UPDATE machine_families SET merged_into_machine_id = ?, updated_at = CURRENT_TIMESTAMP WHERE master_family_id = ?")
+      .bind(targetId, sourceId),
+  ]);
+  const row = await db.prepare(`SELECT f.*, i.public_path AS image_public_path, i.visual_match AS image_visual_match, i.source_url AS image_source_url, i.source_evidence_type AS image_source_evidence_type, i.use_note AS image_use_note, i.publication_recommendation AS image_publication_recommendation, i.rights_attribution AS image_rights_attribution FROM machine_families f LEFT JOIN machine_images i ON i.master_family_id = f.master_family_id WHERE f.master_family_id = ?`).bind(targetId).first<D1Row>();
+  return json({ machine: row && machineFromRow(row) });
 }
 
 async function createMachine(request: Request, db: D1Database) {
@@ -362,6 +463,8 @@ async function deleteMachine(env: Env, id: string) {
   const existingImage = await env.DB.prepare("SELECT object_key FROM machine_images WHERE master_family_id = ?").bind(id).first<D1Row>();
   const machine = await env.DB.prepare("SELECT master_family_id FROM machine_families WHERE master_family_id = ?").bind(id).first<D1Row>();
   if (!machine) return json({ error: "Cette machine est introuvable." }, 404);
+  const mergedMachine = await env.DB.prepare("SELECT master_family_id FROM machine_families WHERE merged_into_machine_id = ? LIMIT 1").bind(id).first<D1Row>();
+  if (mergedMachine) return json({ error: "Cette machine regroupe déjà une autre fiche. Modifiez-la plutôt que de la supprimer." }, 400);
 
   // The inventory itself deliberately remains untouched. Removing a machine
   // hides its reference entry, but preserves all recovered part records and
@@ -435,6 +538,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   const machineImageMatch = url.pathname.match(/^\/api\/machines\/([^/]+)\/image$/);
   if (machineImageMatch && request.method === "GET") return machineImage(env, decodeURIComponent(machineImageMatch[1]));
   if (machineImageMatch && request.method === "POST") return uploadMachineImage(request, env, decodeURIComponent(machineImageMatch[1]));
+  const machineMergeMatch = url.pathname.match(/^\/api\/machines\/([^/]+)\/merge$/);
+  if (machineMergeMatch && request.method === "POST") return mergeMachine(request, env.DB, decodeURIComponent(machineMergeMatch[1]));
   const machineMatch = url.pathname.match(/^\/api\/machines\/([^/]+)$/);
   if (machineMatch && request.method === "PATCH") return updateMachine(request, env.DB, decodeURIComponent(machineMatch[1]));
   if (machineMatch && request.method === "DELETE") return deleteMachine(env, decodeURIComponent(machineMatch[1]));
@@ -455,7 +560,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const term = `%${search}%`;
     const sortColumn = inventorySortColumns[url.searchParams.get("sort") ?? ""] ?? "description";
     const direction = url.searchParams.get("direction") === "desc" ? "DESC" : "ASC";
-    const machineId = url.searchParams.get("machineId")?.trim() ?? "";
+    const requestedMachineId = url.searchParams.get("machineId")?.trim() ?? "";
+    const requestedMachine = machineIdAliases[requestedMachineId] ?? requestedMachineId;
+    const mergedMachine = requestedMachine ? await env.DB.prepare("SELECT merged_into_machine_id FROM machine_families WHERE master_family_id = ?").bind(requestedMachine).first<D1Row>() : null;
+    const machineId = text(mergedMachine?.merged_into_machine_id) || requestedMachine;
     const machineBrand = url.searchParams.get("machineBrand")?.trim() ?? "";
     const location = url.searchParams.get("location")?.trim() ?? "";
     // The brand and model filters intentionally work at different levels.
@@ -505,6 +613,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const changes = await env.DB.prepare("SELECT * FROM inventory_changes ORDER BY id DESC LIMIT 12").all<D1Row>();
     return json({ activity: changes.results.map((row) => ({ id: Number(row.id), inventoryId: Number(row.inventory_id), legacyReference: String(row.legacy_reference), description: String(row.description), changeType: String(row.change_type), note: String(row.note), createdAt: String(row.created_at) })) });
   }
+  if (url.pathname === "/api/history" && request.method === "GET") return listHistory(env.DB, url);
   if (url.pathname === "/api/locations" && request.method === "GET") return listLocations(env.DB);
   const locationMatch = url.pathname.match(/^\/api\/locations\/([^/]+)$/);
   if (locationMatch && request.method === "GET") return locationContents(env.DB, decodeURIComponent(locationMatch[1]));
@@ -513,6 +622,9 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/receipts/batch" && request.method === "POST") return receiveStockBatch(request, env.DB);
   if (url.pathname === "/api/invoice-documents" && request.method === "POST") return uploadInvoiceDocument(request, env);
   if (url.pathname === "/api/issues" && request.method === "POST") return issueStock(request, env.DB);
+  if (url.pathname === "/api/stock-checks" && request.method === "POST") return confirmStockCheck(request, env.DB);
+  const movementMatch = url.pathname.match(/^\/api\/stock-movements\/(\d+)\/reverse$/);
+  if (movementMatch && request.method === "POST") return reverseStockMovement(env.DB, Number(movementMatch[1]));
   const match = url.pathname.match(/^\/api\/inventory\/(\d+)$/);
   if (match && request.method === "PATCH") return updateItem(request, env.DB, Number(match[1]));
   return json({ error: "Not found" }, 404);
@@ -533,8 +645,8 @@ async function listLocations(db: D1Database) {
 }
 
 async function locationContents(db: D1Database, location: string) {
-  const rows = await db.prepare("SELECT legacy_reference, description, quantity_on_hand, last_cost, machine_model FROM inventory_items WHERE location = ? ORDER BY description").bind(location).all<D1Row>();
-  return json({ items: rows.results.map((row) => ({ legacyReference: String(row.legacy_reference), description: String(row.description), quantityOnHand: Number(row.quantity_on_hand), lastCost: Number(row.last_cost), machineModel: String(row.machine_model) })) });
+  const rows = await db.prepare("SELECT * FROM inventory_items WHERE location = ? ORDER BY description, legacy_reference").bind(location).all<D1Row>();
+  return json({ items: rows.results.map(item) });
 }
 
 function text(value: unknown) { return typeof value === "string" ? value.trim() : ""; }
@@ -562,9 +674,18 @@ async function updateItem(request: Request, db: D1Database, id: number) {
   const description = text(body.description);
   if (!reference || !description) return json({ error: "SKU and description are required." }, 400);
   try {
-    await db.prepare(`UPDATE inventory_items SET legacy_reference = ?, supplier_part_number = ?, supplier_category_code = ?, supplier_name = ?, description = ?, quantity_on_hand = ?, last_cost = ?, average_cost = ?, dealer_price = ?, sale_price = ?, location = ?, machine_model = ?, cost_unit = ?, detail_unit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(reference, text(body.supplierPartNumber), text(body.supplierCategoryCode), text(body.supplierName), description, number(body.quantityOnHand), number(body.lastCost), number(body.averageCost), number(body.dealerPrice), number(body.salePrice), text(body.location), text(body.machineModel), text(body.costUnit), text(body.detailUnit), id).run();
-    await db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(id, reference, description, "Pièce mise à jour / Part updated", "Champs sauvegardés dans l'inventaire / Fields saved in inventory").run();
+    const nextQuantity = number(body.quantityOnHand);
+    const previousQuantity = Number(current.quantity_on_hand);
+    const statements: D1PreparedStatement[] = [
+      db.prepare(`UPDATE inventory_items SET legacy_reference = ?, supplier_part_number = ?, supplier_category_code = ?, supplier_name = ?, description = ?, quantity_on_hand = ?, last_cost = ?, average_cost = ?, dealer_price = ?, sale_price = ?, location = ?, machine_model = ?, cost_unit = ?, detail_unit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(reference, text(body.supplierPartNumber), text(body.supplierCategoryCode), text(body.supplierName), description, number(body.quantityOnHand), number(body.lastCost), number(body.averageCost), number(body.dealerPrice), number(body.salePrice), text(body.location), text(body.machineModel), text(body.costUnit), text(body.detailUnit), id),
+      db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(id, reference, description, "Pièce mise à jour / Part updated", "Champs sauvegardés dans l'inventaire / Fields saved in inventory"),
+    ];
+    if (nextQuantity !== previousQuantity) statements.push(
+      db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)")
+        .bind(id, reference, description, "Correction manuelle", nextQuantity - previousQuantity, previousQuantity, nextQuantity, text(body.location), text(body.supplierName), "Quantité modifiée dans la fiche produit")
+    );
+    await db.batch(statements);
     return json({ ok: true });
   } catch { return json({ error: "That SKU already exists." }, 409); }
 }
@@ -661,6 +782,79 @@ async function issueStock(request: Request, db: D1Database) {
     db.prepare("UPDATE inventory_items SET quantity_on_hand = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(after, current.id),
     db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(current.id, reference, current.description, reason, -quantity, before, after, current.location, current.supplier_name, "", note),
     db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(current.id, reference, current.description, reason, `-${quantity}${note ? ` · ${note}` : ""}`),
+  ]);
+  return json({ ok: true, quantityAfter: after });
+}
+
+type StockCheckLine = { inventoryId?: unknown; countedQuantity?: unknown };
+
+async function confirmStockCheck(request: Request, db: D1Database) {
+  const body = await request.json<{ location?: unknown; lines?: StockCheckLine[] }>();
+  const location = text(body.location);
+  const lines = Array.isArray(body.lines) ? body.lines : [];
+  if (!location || !lines.length) return json({ error: "Choisissez un emplacement et comptez au moins une pièce." }, 400);
+  if (lines.length > 200) return json({ error: "Cette vérification contient trop de lignes." }, 400);
+
+  const prepared: Array<{ current: D1Row; counted: number }> = [];
+  for (const line of lines) {
+    const inventoryId = Number(line.inventoryId);
+    const counted = number(line.countedQuantity);
+    if (!Number.isInteger(inventoryId) || inventoryId <= 0 || counted < 0) return json({ error: "Chaque quantité comptée doit être zéro ou plus." }, 400);
+    const current = await db.prepare("SELECT * FROM inventory_items WHERE id = ? AND location = ?").bind(inventoryId, location).first<D1Row>();
+    if (!current) return json({ error: "Une pièce a changé d’emplacement. Rechargez la vérification avant de confirmer." }, 409);
+    prepared.push({ current, counted });
+  }
+
+  const statements: D1PreparedStatement[] = [];
+  let adjustments = 0;
+  for (const { current, counted } of prepared) {
+    const before = Number(current.quantity_on_hand);
+    if (before === counted) continue;
+    adjustments += 1;
+    const delta = counted - before;
+    statements.push(
+      db.prepare("UPDATE inventory_items SET quantity_on_hand = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(counted, current.id),
+      db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)")
+        .bind(current.id, current.legacy_reference, current.description, "Vérification d’inventaire", delta, before, counted, location, current.supplier_name, `Comptage physique confirmé à ${location}`),
+      db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)")
+        .bind(current.id, current.legacy_reference, current.description, "Vérification d’inventaire", `${before} → ${counted} · ${location}`),
+    );
+  }
+  if (statements.length) await db.batch(statements);
+  return json({ ok: true, location, adjustments, linesChecked: prepared.length });
+}
+
+async function listHistory(db: D1Database, url: URL) {
+  const offset = Math.max(0, Math.min(Number(url.searchParams.get("offset") ?? 0) || 0, 10_000));
+  const rows = await db.prepare(`SELECT m.*, CASE WHEN m.id = (SELECT MAX(newer.id) FROM stock_movements newer WHERE newer.inventory_id = m.inventory_id) THEN 1 ELSE 0 END AS is_latest FROM stock_movements m ORDER BY m.id DESC LIMIT 60 OFFSET ?`).bind(offset).all<D1Row>();
+  const changes = await db.prepare("SELECT * FROM inventory_changes WHERE change_type NOT IN (?, ?, ?) ORDER BY id DESC LIMIT 60")
+    .bind("Entrée d'inventaire", "Vérification d’inventaire", "Annulation de mouvement").all<D1Row>();
+  return json({
+    movements: rows.results.map((row) => ({
+      id: Number(row.id), inventoryId: Number(row.inventory_id), legacyReference: String(row.legacy_reference), description: String(row.description), movementType: String(row.movement_type), quantityDelta: Number(row.quantity_delta), quantityBefore: Number(row.quantity_before), quantityAfter: Number(row.quantity_after), location: String(row.location), supplierName: String(row.supplier_name), invoiceNumber: String(row.invoice_number), note: String(row.note), createdAt: String(row.created_at), canReverse: Number(row.is_latest) === 1,
+    })),
+    changes: changes.results.map((row) => ({ id: Number(row.id), inventoryId: Number(row.inventory_id), legacyReference: String(row.legacy_reference), description: String(row.description), changeType: String(row.change_type), note: String(row.note), createdAt: String(row.created_at) })),
+    nextOffset: rows.results.length === 60 ? offset + rows.results.length : null,
+  });
+}
+
+async function reverseStockMovement(db: D1Database, movementId: number) {
+  const movement = await db.prepare("SELECT * FROM stock_movements WHERE id = ?").bind(movementId).first<D1Row>();
+  if (!movement) return json({ error: "Ce mouvement est introuvable." }, 404);
+  const latest = await db.prepare("SELECT id FROM stock_movements WHERE inventory_id = ? ORDER BY id DESC LIMIT 1").bind(movement.inventory_id).first<D1Row>();
+  if (Number(latest?.id) !== movementId) return json({ error: "Un mouvement plus récent existe pour cette pièce. Ouvrez la fiche et corrigez la quantité actuelle plutôt que d’annuler cet ancien mouvement." }, 409);
+  const current = await db.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(movement.inventory_id).first<D1Row>();
+  if (!current) return json({ error: "La pièce liée à ce mouvement est introuvable." }, 404);
+  const before = Number(current.quantity_on_hand);
+  const delta = -Number(movement.quantity_delta);
+  const after = before + delta;
+  if (after < 0) return json({ error: "Cette annulation ferait passer le stock sous zéro. Corrigez la fiche manuellement." }, 400);
+  await db.batch([
+    db.prepare("UPDATE inventory_items SET quantity_on_hand = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(after, current.id),
+    db.prepare("INSERT INTO stock_movements (inventory_id, legacy_reference, description, movement_type, quantity_delta, quantity_before, quantity_after, location, supplier_name, invoice_number, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)")
+      .bind(current.id, current.legacy_reference, current.description, "Annulation de mouvement", delta, before, after, current.location, current.supplier_name, `Annule le mouvement #${movementId} — ${String(movement.movement_type)}`),
+    db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)")
+      .bind(current.id, current.legacy_reference, current.description, "Annulation de mouvement", `${before} → ${after} · mouvement #${movementId}`),
   ]);
   return json({ ok: true, quantityAfter: after });
 }
