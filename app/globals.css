@@ -7,6 +7,13 @@
   --color-foreground: var(--ink);
 }
 
+.form-actions-spacer { flex: 1; }
+.danger { padding: 10px 14px; border: 1px solid #d89a87; border-radius: 9px; color: #8d2e1d; background: #fff3f0; font-size: 14px; font-weight: 700; }
+.danger:hover { background: #ffe6df; }
+.danger:disabled { opacity: .6; cursor: wait; }
+.machine-logo-shortcut { display: grid; width: 100%; min-height: 52px; place-items: center; padding: 8px 14px; border: 1px solid #b9cebd; border-radius: 8px; background: #fff; }.machine-logo-shortcut:hover { border-color: var(--green); background: #eef7ef; }.machine-logo-shortcut:focus-visible { outline: 3px solid #78a787; outline-offset: 3px; }.machine-logo-shortcut img { display: block; width: min(155px, 78%); max-height: 34px; object-fit: contain; }
+.brand-filter-chips { align-items: stretch; }.brand-filter-chips > button { flex: 1 1 104px; }.filter-chips .brand-filter-chip { display: grid; min-width: 88px; min-height: 48px; place-items: center; padding: 7px 10px; background: #fff; }.filter-chips .brand-filter-chip img { display: block; width: min(150px, 100%); max-height: 28px; object-fit: contain; }.filter-chips .brand-filter-chip.active { background: #e1f0e4; }
+
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: Arial, Helvetica, sans-serif; }
 button, input { font: inherit; }
