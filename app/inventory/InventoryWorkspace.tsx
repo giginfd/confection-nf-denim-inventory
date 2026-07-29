@@ -464,11 +464,23 @@ export default function InventoryWorkspace() {
           <section className="editor product-editor" role="dialog" aria-modal="true" aria-label={formTitle}>
             <div className="editor-heading"><div><p className="eyebrow">Fiche produit</p><h2>{formTitle}</h2></div><button className="close" onClick={() => { setSelected(null); setCreating(false); }}>×</button></div>
             <form onSubmit={save}>
-              <section className="product-main-section"><h3>Informations principales</h3><div className="product-main-grid">
+              <section className="product-legacy-cue" aria-label="Repères de la pièce">
+                <div>
+                  <span>{form.supplierPartNumber ? "N° pièce fournisseur" : "N° produit"}</span>
+                  <strong>{form.supplierPartNumber || form.legacyReference || "Nouvelle pièce"}</strong>
+                  {form.supplierPartNumber && form.legacyReference && <small>N° produit {form.legacyReference}</small>}
+                </div>
+                <div>
+                  <span>Desc / produit</span>
+                  <strong>{form.description || "Description à ajouter"}</strong>
+                  {form.machineModel && <small>{form.machineModel}</small>}
+                </div>
+              </section>
+              <section className="product-main-section"><h3>Stock et emplacement</h3><div className="product-main-grid">
                 {creating && <Field label="N° de produit" value={form.legacyReference} onChange={(value) => updateField("legacyReference", value)} required />}
                 <div className="product-field-full"><Field label="Description" value={form.description} onChange={(value) => updateField("description", value)} required /></div>
+                <div className="product-location-field"><Field label="Emplacement" value={form.location} onChange={(value) => updateField("location", value)} /></div>
                 <Field label="Quantité en inventaire" type="number" value={form.quantityOnHand} onChange={(value) => updateField("quantityOnHand", value)} />
-                <Field label="Emplacement" value={form.location} onChange={(value) => updateField("location", value)} />
                 <Field label="Fournisseur" value={form.supplierName} onChange={(value) => updateField("supplierName", value)} />
                 <Field label="Prix coûtant (CAD)" type="number" value={form.lastCost} onChange={(value) => updateField("lastCost", value)} />
                 <div className="product-field-full"><MachineModelField value={form.machineModel} onChange={(value) => updateField("machineModel", value)} catalog={machineLinks} /></div>
