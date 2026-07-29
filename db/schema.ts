@@ -15,6 +15,7 @@ export const inventoryItems = sqliteTable("inventory_items", {
   salePrice: real("sale_price").notNull().default(0),
   location: text("location").notNull().default(""),
   machineModel: text("machine_model").notNull().default(""),
+  machineAliases: text("machine_aliases").notNull().default(""),
   costUnit: text("cost_unit").notNull().default(""),
   detailUnit: text("detail_unit").notNull().default(""),
   legacyRawData: text("legacy_raw_data").notNull().default("{}"),
@@ -40,6 +41,31 @@ export const inventoryDataImports = sqliteTable("inventory_data_imports", {
   missingCount: integer("missing_count").notNull().default(0),
   importedAt: text("imported_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const inventoryMachineAssociationAudits = sqliteTable("inventory_machine_association_audits", {
+  auditKey: text("audit_key").primaryKey(),
+  inventoryId: integer("inventory_id"),
+  legacyReference: text("legacy_reference").notNull(),
+  supplierCategoryCode: text("supplier_category_code").notNull(),
+  previousMachineAssociation: text("previous_machine_association").notNull(),
+  proposedMachineAssociation: text("proposed_machine_association").notNull(),
+  appliedMachineAssociation: text("applied_machine_association").notNull().default(""),
+  associationType: text("association_type").notNull().default(""),
+  auditClassification: text("audit_classification").notNull().default(""),
+  confidence: text("confidence").notNull().default(""),
+  evidenceUrls: text("evidence_urls").notNull().default(""),
+  evidenceSourceType: text("evidence_source_type").notNull().default(""),
+  rationale: text("rationale").notNull().default(""),
+  nextPhysicalVerificationStep: text("next_physical_verification_step").notNull().default(""),
+  reviewer: text("reviewer").notNull().default(""),
+  reviewedAt: text("reviewed_at").notNull().default(""),
+  approvalNote: text("approval_note").notNull().default(""),
+  applyStatus: text("apply_status").notNull().default("pending"),
+  importedAt: text("imported_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("inventory_machine_association_audits_inventory_idx").on(table.inventoryId),
+  index("inventory_machine_association_audits_reference_idx").on(table.legacyReference, table.supplierCategoryCode),
+]);
 
 export const stockMovements = sqliteTable("stock_movements", {
   id: integer("id").primaryKey({ autoIncrement: true }),
