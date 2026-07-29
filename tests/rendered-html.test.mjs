@@ -50,3 +50,20 @@ test("keeps recovered supplier part numbers wired to the database and inventory 
   assert.match(worker, /TRIM\(supplier_part_number\) = ''/);
   assert.match(supplierSeed, /"legacyReference": "2030"[\s\S]{0,160}"supplierPartNumber": "S09273001"/);
 });
+
+test("applies reviewed machine associations while keeping legacy names searchable", async () => {
+  const [workspace, worker, auditSeed, schema] = await Promise.all([
+    readFile(new URL("../app/inventory/InventoryWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/machine-association-audit-seed.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.equal((auditSeed.match(/"legacyReference":/g) ?? []).length, 92);
+  assert.match(auditSeed, /"currentMachineAssociation": "DIVER AMCO"[\s\S]{0,180}"proposedMachineAssociation": "AMCO \/ Teledyne AMCO/);
+  assert.match(worker, /initializeMachineAssociationAudit/);
+  assert.match(worker, /conflict_preserved/);
+  assert.match(worker, /machine_aliases LIKE \?/);
+  assert.match(schema, /inventoryMachineAssociationAudits/);
+  assert.match(workspace, /Ancien nom de machine/);
+});

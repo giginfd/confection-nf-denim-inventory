@@ -7,6 +7,7 @@ import { hiddenMachineFamilyIds, machineCatalog, machineIdAliases, productionSta
 import { machineResearchFamilies, machineResearchSnapshot } from "../app/lib/machine-research-family-seed";
 import { machineResearchImageSubmissions } from "../app/lib/machine-research-submission-seed";
 import { machineResearchLegacyLabelReviews } from "../app/lib/machine-research-review-seed";
+import { machineAssociationAuditSeed, machineAssociationAuditSnapshot } from "../app/lib/machine-association-audit-seed";
 import { supplierContactAliases, supplierContactSeed, type SupplierContactSeed } from "../app/lib/supplier-contact-seed";
 import { supplierPartNumberSeed } from "../app/lib/supplier-part-number-seed";
 
@@ -85,7 +86,7 @@ const inventorySortColumns: Record<string, string> = {
 };
 
 const initializeStatements = [
-  `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_reference TEXT NOT NULL UNIQUE, supplier_part_number TEXT NOT NULL DEFAULT '', supplier_category_code TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL, quantity_on_hand REAL NOT NULL DEFAULT 0, last_cost REAL NOT NULL DEFAULT 0, average_cost REAL NOT NULL DEFAULT 0, dealer_price REAL NOT NULL DEFAULT 0, sale_price REAL NOT NULL DEFAULT 0, location TEXT NOT NULL DEFAULT '', machine_model TEXT NOT NULL DEFAULT '', cost_unit TEXT NOT NULL DEFAULT '', detail_unit TEXT NOT NULL DEFAULT '', legacy_raw_data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS inventory_items (id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_reference TEXT NOT NULL UNIQUE, supplier_part_number TEXT NOT NULL DEFAULT '', supplier_category_code TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL, quantity_on_hand REAL NOT NULL DEFAULT 0, last_cost REAL NOT NULL DEFAULT 0, average_cost REAL NOT NULL DEFAULT 0, dealer_price REAL NOT NULL DEFAULT 0, sale_price REAL NOT NULL DEFAULT 0, location TEXT NOT NULL DEFAULT '', machine_model TEXT NOT NULL DEFAULT '', machine_aliases TEXT NOT NULL DEFAULT '', cost_unit TEXT NOT NULL DEFAULT '', detail_unit TEXT NOT NULL DEFAULT '', legacy_raw_data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS inventory_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, change_type TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, inventory_id INTEGER NOT NULL, legacy_reference TEXT NOT NULL, description TEXT NOT NULL, movement_type TEXT NOT NULL, quantity_delta REAL NOT NULL, quantity_before REAL NOT NULL, quantity_after REAL NOT NULL, location TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', invoice_number TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS invoice_documents (id TEXT PRIMARY KEY, object_key TEXT NOT NULL UNIQUE, file_name TEXT NOT NULL, content_type TEXT NOT NULL DEFAULT 'application/pdf', size_bytes INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'uploaded', invoice_number TEXT NOT NULL DEFAULT '', supplier_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT)`,
@@ -98,6 +99,7 @@ const initializeStatements = [
   `CREATE TABLE IF NOT EXISTS legacy_label_reviews (review_id TEXT PRIMARY KEY, original_unresolved_legacy_label TEXT NOT NULL, linked_inventory_part_records INTEGER NOT NULL DEFAULT 0, unique_product_numbers INTEGER NOT NULL DEFAULT 0, possible_manufacturer_equipment_hint_source TEXT NOT NULL DEFAULT '', example_product_descriptions_source TEXT NOT NULL DEFAULT '', example_suppliers_source TEXT NOT NULL DEFAULT '', research_group_id TEXT NOT NULL DEFAULT '', likely_manufacturer_model_role TEXT NOT NULL DEFAULT '', french_ui_label TEXT NOT NULL DEFAULT '', production_step_french TEXT NOT NULL DEFAULT '', outcome_en TEXT NOT NULL DEFAULT '', verification_status_fr TEXT NOT NULL DEFAULT '', evidence_and_caution_en TEXT NOT NULL DEFAULT '', next_verification_step_en TEXT NOT NULL DEFAULT '', manual_parts_evidence_links TEXT NOT NULL DEFAULT '', page_treatment_french TEXT NOT NULL DEFAULT '', imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS machine_part_links (id INTEGER PRIMARY KEY AUTOINCREMENT, master_family_id TEXT NOT NULL, inventory_id INTEGER, legacy_reference TEXT NOT NULL DEFAULT '', relationship_type TEXT NOT NULL DEFAULT 'mentioned_with_label', confidence TEXT NOT NULL DEFAULT '', evidence_type TEXT NOT NULL DEFAULT '', evidence_reference TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS inventory_data_imports (import_key TEXT PRIMARY KEY, source_name TEXT NOT NULL, matched_count INTEGER NOT NULL DEFAULT 0, conflict_count INTEGER NOT NULL DEFAULT 0, missing_count INTEGER NOT NULL DEFAULT 0, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS inventory_machine_association_audits (audit_key TEXT PRIMARY KEY, inventory_id INTEGER, legacy_reference TEXT NOT NULL, supplier_category_code TEXT NOT NULL, previous_machine_association TEXT NOT NULL, proposed_machine_association TEXT NOT NULL, applied_machine_association TEXT NOT NULL DEFAULT '', association_type TEXT NOT NULL DEFAULT '', audit_classification TEXT NOT NULL DEFAULT '', confidence TEXT NOT NULL DEFAULT '', evidence_urls TEXT NOT NULL DEFAULT '', evidence_source_type TEXT NOT NULL DEFAULT '', rationale TEXT NOT NULL DEFAULT '', next_physical_verification_step TEXT NOT NULL DEFAULT '', reviewer TEXT NOT NULL DEFAULT '', reviewed_at TEXT NOT NULL DEFAULT '', approval_note TEXT NOT NULL DEFAULT '', apply_status TEXT NOT NULL DEFAULT 'pending', imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE INDEX IF NOT EXISTS inventory_items_description_idx ON inventory_items(description)`,
   `CREATE INDEX IF NOT EXISTS inventory_changes_created_idx ON inventory_changes(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS stock_movements_inventory_idx ON stock_movements(inventory_id)`,
@@ -108,6 +110,8 @@ const initializeStatements = [
   `CREATE INDEX IF NOT EXISTS machine_image_submissions_family_idx ON machine_image_submissions(master_family_id)`,
   `CREATE INDEX IF NOT EXISTS legacy_label_reviews_group_idx ON legacy_label_reviews(research_group_id)`,
   `CREATE INDEX IF NOT EXISTS machine_part_links_family_idx ON machine_part_links(master_family_id)`,
+  `CREATE INDEX IF NOT EXISTS inventory_machine_association_audits_inventory_idx ON inventory_machine_association_audits(inventory_id)`,
+  `CREATE INDEX IF NOT EXISTS inventory_machine_association_audits_reference_idx ON inventory_machine_association_audits(legacy_reference, supplier_category_code)`,
 ];
 
 async function initialize(db: D1Database) {
@@ -116,6 +120,7 @@ async function initialize(db: D1Database) {
   if (!supplierPartNumberColumn) {
     await db.prepare("ALTER TABLE inventory_items ADD COLUMN supplier_part_number TEXT NOT NULL DEFAULT ''").run();
   }
+  await ensureColumn(db, "inventory_items", "machine_aliases", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, "machine_families", "alternate_names", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, "machine_families", "search_term", "TEXT NOT NULL DEFAULT ''");
   await ensureColumn(db, "machine_families", "machine_status", "TEXT NOT NULL DEFAULT 'à confirmer'");
@@ -135,6 +140,7 @@ async function initialize(db: D1Database) {
     }
   }
   await initializeSupplierPartNumbers(db);
+  await initializeMachineAssociationAudit(db);
   await initializeSupplierContacts(db);
   await initializeMachineResearch(db);
   await ensureCuratedMachineCatalog(db);
@@ -188,6 +194,117 @@ async function initializeSupplierPartNumbers(db: D1Database) {
 
   if (conflictCount || missingCount) {
     console.warn(`Supplier-part recovery completed with ${conflictCount} conflict(s) and ${missingCount} missing row(s).`);
+  }
+}
+
+function mergeMachineAliases(existingAliases: string, previousAssociation: string, appliedAssociation: string) {
+  const aliases = existingAliases.split("|").map((value) => value.trim()).filter(Boolean);
+  const seen = new Set(aliases.map(normalizedMachineTerm));
+  const previousKey = normalizedMachineTerm(previousAssociation);
+  if (previousAssociation.trim() && previousKey !== normalizedMachineTerm(appliedAssociation) && !seen.has(previousKey)) {
+    aliases.push(previousAssociation.trim());
+  }
+  return aliases.join(" | ");
+}
+
+async function initializeMachineAssociationAudit(db: D1Database) {
+  const alreadyImported = await db.prepare("SELECT import_key FROM inventory_data_imports WHERE import_key = ?")
+    .bind(machineAssociationAuditSnapshot.importKey).first<D1Row>();
+  if (alreadyImported) return;
+
+  const currentRows = await db.prepare(
+    "SELECT id, legacy_reference, supplier_category_code, machine_model, machine_aliases FROM inventory_items"
+  ).all<D1Row>();
+  const currentByKey = new Map(currentRows.results.map((row) => [
+    `${String(row.legacy_reference)}\u0000${String(row.supplier_category_code)}`,
+    row,
+  ]));
+  const statements: D1PreparedStatement[] = [];
+  let matchedCount = 0;
+  let conflictCount = 0;
+  let missingCount = 0;
+
+  for (const reviewed of machineAssociationAuditSeed) {
+    const auditKey = `${reviewed.legacyReference}:${reviewed.supplierCategoryCode}`;
+    const current = currentByKey.get(`${reviewed.legacyReference}\u0000${reviewed.supplierCategoryCode}`);
+    let applyStatus = "missing";
+    let appliedMachineAssociation = "";
+    let inventoryId: number | null = null;
+
+    if (!current) {
+      missingCount += 1;
+    } else {
+      inventoryId = Number(current.id);
+      const storedMachine = String(current.machine_model ?? "");
+      const storedKey = normalizedMachineTerm(storedMachine);
+      const previousKey = normalizedMachineTerm(reviewed.currentMachineAssociation);
+      const proposedKey = normalizedMachineTerm(reviewed.proposedMachineAssociation);
+      const aliases = mergeMachineAliases(
+        String(current.machine_aliases ?? ""),
+        reviewed.currentMachineAssociation,
+        reviewed.proposedMachineAssociation
+      );
+
+      if (storedKey === previousKey) {
+        applyStatus = "applied";
+        appliedMachineAssociation = reviewed.proposedMachineAssociation;
+        matchedCount += 1;
+        statements.push(db.prepare(
+          "UPDATE inventory_items SET machine_model = ?, machine_aliases = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND machine_model = ?"
+        ).bind(reviewed.proposedMachineAssociation, aliases, inventoryId, storedMachine));
+      } else if (storedKey === proposedKey) {
+        applyStatus = "already_applied";
+        appliedMachineAssociation = storedMachine;
+        matchedCount += 1;
+        statements.push(db.prepare(
+          "UPDATE inventory_items SET machine_aliases = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND machine_model = ?"
+        ).bind(aliases, inventoryId, storedMachine));
+      } else {
+        applyStatus = "conflict_preserved";
+        appliedMachineAssociation = storedMachine;
+        conflictCount += 1;
+      }
+    }
+
+    statements.push(db.prepare(
+      `INSERT OR REPLACE INTO inventory_machine_association_audits
+       (audit_key, inventory_id, legacy_reference, supplier_category_code, previous_machine_association, proposed_machine_association, applied_machine_association, association_type, audit_classification, confidence, evidence_urls, evidence_source_type, rationale, next_physical_verification_step, reviewer, reviewed_at, approval_note, apply_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      auditKey,
+      inventoryId,
+      reviewed.legacyReference,
+      reviewed.supplierCategoryCode,
+      reviewed.currentMachineAssociation,
+      reviewed.proposedMachineAssociation,
+      appliedMachineAssociation,
+      reviewed.associationType,
+      reviewed.auditClassification,
+      reviewed.confidence,
+      reviewed.evidenceUrls,
+      reviewed.evidenceSourceType,
+      reviewed.rationale,
+      reviewed.nextPhysicalVerificationStep,
+      machineAssociationAuditSnapshot.reviewer,
+      machineAssociationAuditSnapshot.reviewedAt,
+      machineAssociationAuditSnapshot.approvalNote,
+      applyStatus
+    ));
+  }
+
+  await seedInChunks(db, statements);
+  await db.prepare(
+    "INSERT INTO inventory_data_imports (import_key, source_name, matched_count, conflict_count, missing_count) VALUES (?, ?, ?, ?, ?)"
+  ).bind(
+    machineAssociationAuditSnapshot.importKey,
+    machineAssociationAuditSnapshot.sourceName,
+    matchedCount,
+    conflictCount,
+    missingCount
+  ).run();
+
+  if (conflictCount || missingCount) {
+    console.warn(`Machine-association import preserved ${conflictCount} manual conflict(s) and found ${missingCount} missing row(s).`);
   }
 }
 
@@ -329,7 +446,7 @@ async function handlePasswordLogin(request: Request, env: Env) {
 
 function item(row: D1Row) {
   return {
-    id: Number(row.id), legacyReference: String(row.legacy_reference), supplierPartNumber: String(row.supplier_part_number ?? ""), supplierCategoryCode: String(row.supplier_category_code), supplierName: String(row.supplier_name), description: String(row.description), quantityOnHand: Number(row.quantity_on_hand), lastCost: Number(row.last_cost), averageCost: Number(row.average_cost), dealerPrice: Number(row.dealer_price), salePrice: Number(row.sale_price), location: String(row.location), machineModel: String(row.machine_model), costUnit: String(row.cost_unit), detailUnit: String(row.detail_unit), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    id: Number(row.id), legacyReference: String(row.legacy_reference), supplierPartNumber: String(row.supplier_part_number ?? ""), supplierCategoryCode: String(row.supplier_category_code), supplierName: String(row.supplier_name), description: String(row.description), quantityOnHand: Number(row.quantity_on_hand), lastCost: Number(row.last_cost), averageCost: Number(row.average_cost), dealerPrice: Number(row.dealer_price), salePrice: Number(row.sale_price), location: String(row.location), machineModel: String(row.machine_model), machineAliases: String(row.machine_aliases ?? ""), costUnit: String(row.cost_unit), detailUnit: String(row.detail_unit), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
 
@@ -583,20 +700,24 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     const filters: string[] = [];
     const values: string[] = [];
     if (search) {
-      filters.push("(legacy_reference LIKE ? OR supplier_part_number LIKE ? OR description LIKE ? OR supplier_name LIKE ? OR location LIKE ? OR machine_model LIKE ?)");
-      values.push(term, term, term, term, term, term);
+      filters.push("(legacy_reference LIKE ? OR supplier_part_number LIKE ? OR description LIKE ? OR supplier_name LIKE ? OR location LIKE ? OR machine_model LIKE ? OR machine_aliases LIKE ?)");
+      values.push(term, term, term, term, term, term, term);
     }
     if (machineTerms.length) {
-      const normalizedColumn = "UPPER(REPLACE(REPLACE(REPLACE(REPLACE(machine_model, '-', ''), '.', ''), '/', ''), ' ', ''))";
-      filters.push(`(${machineTerms.map(() => `${normalizedColumn} LIKE ?`).join(" OR ")})`);
-      values.push(...machineTerms.map((value) => `%${normalizedMachineTerm(value)}%`));
+      const normalizedModelColumn = "UPPER(REPLACE(REPLACE(REPLACE(REPLACE(machine_model, '-', ''), '.', ''), '/', ''), ' ', ''))";
+      const normalizedAliasColumn = "UPPER(REPLACE(REPLACE(REPLACE(REPLACE(machine_aliases, '-', ''), '.', ''), '/', ''), ' ', ''))";
+      filters.push(`(${machineTerms.flatMap(() => [`${normalizedModelColumn} LIKE ?`, `${normalizedAliasColumn} LIKE ?`]).join(" OR ")})`);
+      values.push(...machineTerms.flatMap((value) => {
+        const normalizedTerm = `%${normalizedMachineTerm(value)}%`;
+        return [normalizedTerm, normalizedTerm];
+      }));
     } else if (machineBrand) {
       // Older records often identify a manufacturer's part in the description
       // rather than in the machine/model field. Keep those records visible at
       // the brand level, without guessing which specific model they fit.
-      filters.push("(machine_model LIKE ? OR description LIKE ?)");
+      filters.push("(machine_model LIKE ? OR machine_aliases LIKE ? OR description LIKE ?)");
       const brandTerm = `%${machineBrand}%`;
-      values.push(brandTerm, brandTerm);
+      values.push(brandTerm, brandTerm, brandTerm);
     }
     if (location) {
       filters.push("location = ?");
@@ -658,8 +779,8 @@ async function createItem(request: Request, db: D1Database) {
   const description = text(body.description);
   if (!reference || !description) return json({ error: "SKU and description are required." }, 400);
   try {
-    const inserted = await db.prepare(`INSERT INTO inventory_items (legacy_reference, supplier_part_number, supplier_category_code, supplier_name, description, quantity_on_hand, last_cost, average_cost, dealer_price, sale_price, location, machine_model, cost_unit, detail_unit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(reference, text(body.supplierPartNumber), text(body.supplierCategoryCode), text(body.supplierName), description, number(body.quantityOnHand), number(body.lastCost), number(body.averageCost), number(body.dealerPrice), number(body.salePrice), text(body.location), text(body.machineModel), text(body.costUnit), text(body.detailUnit)).run();
+    const inserted = await db.prepare(`INSERT INTO inventory_items (legacy_reference, supplier_part_number, supplier_category_code, supplier_name, description, quantity_on_hand, last_cost, average_cost, dealer_price, sale_price, location, machine_model, machine_aliases, cost_unit, detail_unit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(reference, text(body.supplierPartNumber), text(body.supplierCategoryCode), text(body.supplierName), description, number(body.quantityOnHand), number(body.lastCost), number(body.averageCost), number(body.dealerPrice), number(body.salePrice), text(body.location), text(body.machineModel), text(body.machineAliases), text(body.costUnit), text(body.detailUnit)).run();
     const inventoryId = Number(inserted.meta.last_row_id);
     await db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(inventoryId, reference, description, "Pièce ajoutée / Part added", "Ajoutée dans l'inventaire / Added in inventory").run();
     return json({ ok: true }, 201);
@@ -677,8 +798,8 @@ async function updateItem(request: Request, db: D1Database, id: number) {
     const nextQuantity = number(body.quantityOnHand);
     const previousQuantity = Number(current.quantity_on_hand);
     const statements: D1PreparedStatement[] = [
-      db.prepare(`UPDATE inventory_items SET legacy_reference = ?, supplier_part_number = ?, supplier_category_code = ?, supplier_name = ?, description = ?, quantity_on_hand = ?, last_cost = ?, average_cost = ?, dealer_price = ?, sale_price = ?, location = ?, machine_model = ?, cost_unit = ?, detail_unit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(reference, text(body.supplierPartNumber), text(body.supplierCategoryCode), text(body.supplierName), description, number(body.quantityOnHand), number(body.lastCost), number(body.averageCost), number(body.dealerPrice), number(body.salePrice), text(body.location), text(body.machineModel), text(body.costUnit), text(body.detailUnit), id),
+      db.prepare(`UPDATE inventory_items SET legacy_reference = ?, supplier_part_number = ?, supplier_category_code = ?, supplier_name = ?, description = ?, quantity_on_hand = ?, last_cost = ?, average_cost = ?, dealer_price = ?, sale_price = ?, location = ?, machine_model = ?, machine_aliases = ?, cost_unit = ?, detail_unit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(reference, text(body.supplierPartNumber), text(body.supplierCategoryCode), text(body.supplierName), description, number(body.quantityOnHand), number(body.lastCost), number(body.averageCost), number(body.dealerPrice), number(body.salePrice), text(body.location), text(body.machineModel), text(body.machineAliases), text(body.costUnit), text(body.detailUnit), id),
       db.prepare("INSERT INTO inventory_changes (inventory_id, legacy_reference, description, change_type, note) VALUES (?, ?, ?, ?, ?)").bind(id, reference, description, "Pièce mise à jour / Part updated", "Champs sauvegardés dans l'inventaire / Fields saved in inventory"),
     ];
     if (nextQuantity !== previousQuantity) statements.push(

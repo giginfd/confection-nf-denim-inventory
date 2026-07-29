@@ -12,6 +12,7 @@ export type InventoryItem = {
   salePrice: number;
   location: string;
   machineModel: string;
+  machineAliases: string;
   costUnit: string;
   detailUnit: string;
   legacyRawData?: Record<string, string>;

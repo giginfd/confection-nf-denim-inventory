@@ -51,6 +51,7 @@ const emptyForm: FormValues = {
   salePrice: 0,
   location: "",
   machineModel: "",
+  machineAliases: "",
   costUnit: "EA",
   detailUnit: "EA",
 };
@@ -216,6 +217,7 @@ export default function InventoryWorkspace() {
       salePrice: item.salePrice,
       location: item.location,
       machineModel: item.machineModel,
+      machineAliases: item.machineAliases,
       costUnit: item.costUnit,
       detailUnit: item.detailUnit,
     });
@@ -488,6 +490,7 @@ export default function InventoryWorkspace() {
               <details className="product-extra-details"><summary>Plus d’informations</summary><div className="form-grid">
                 {!creating && <Field label="N° de produit" value={form.legacyReference} onChange={(value) => updateField("legacyReference", value)} required />}
                 <Field label="N° de pièce fournisseur" value={form.supplierPartNumber} onChange={(value) => updateField("supplierPartNumber", value)} />
+                <Field label="Ancien nom de machine" value={form.machineAliases} onChange={(value) => updateField("machineAliases", value)} />
                 <Field label="Code fournisseur" value={form.supplierCategoryCode} onChange={(value) => updateField("supplierCategoryCode", value)} />
                 <Field label="Prix de vente (CAD)" type="number" value={form.dealerPrice} onChange={(value) => updateField("dealerPrice", value)} />
                 <Field label="Divers (donnée récupérée)" type="number" value={form.averageCost} onChange={(value) => updateField("averageCost", value)} />
