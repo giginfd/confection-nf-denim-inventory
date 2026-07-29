@@ -80,19 +80,39 @@ function shortDate(value: string) {
   return new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
-function machineDetailsLink(machineLabel: string, catalog: MachineCatalogEntry[]) {
+function normalizedMachineLabel(value: string) {
+  return value.trim().toLocaleUpperCase("fr-CA").replace(/[^A-Z0-9]/g, "");
+}
+
+function associatedMachine(machineLabel: string, catalog: MachineCatalogEntry[]) {
   const normalized = machineLabel.trim().toLocaleUpperCase("fr-CA").replace(/[^A-Z0-9]/g, "");
-  if (!normalized) return "";
-  const match = catalog.find((machine) => [machine.searchTerm, ...(machine.searchTerms ?? []), machine.model].some((term) => {
-    const candidate = term.trim().toLocaleUpperCase("fr-CA").replace(/[^A-Z0-9]/g, "");
-    return candidate.length >= 4 && (normalized.includes(candidate) || candidate.includes(normalized));
-  }));
+  if (normalized.length < 4) return undefined;
+  const ranked = catalog.map((machine) => {
+    const terms = [machine.model, machine.searchTerm, ...(machine.searchTerms ?? []), machine.alternateNames ?? "", machine.originalLabelsPreserved ?? ""]
+      .flatMap((value) => value.split(/[|,;\n]/))
+      .map(normalizedMachineLabel)
+      .filter((value) => value.length >= 4);
+    const score = terms.reduce((best, term) => {
+      if (term === normalized) return Math.max(best, 1000 + term.length);
+      if (normalized.includes(term)) return Math.max(best, 500 + term.length);
+      return best;
+    }, 0);
+    return { machine, score };
+  }).filter((entry) => entry.score > 0).sort((a, b) => b.score - a.score);
+  if (!ranked.length || (ranked[1] && ranked[1].score === ranked[0].score)) return undefined;
+  return ranked[0].machine;
+}
+
+function machineDetailsLink(machineLabel: string, catalog: MachineCatalogEntry[]) {
+  const match = associatedMachine(machineLabel, catalog);
   return match ? `/machines?machine=${encodeURIComponent(match.id)}` : "";
 }
 
 function MachineDetailsLink({ machineLabel, catalog }: { machineLabel: string; catalog: MachineCatalogEntry[] }) {
+  const machine = associatedMachine(machineLabel, catalog);
   const href = machineDetailsLink(machineLabel, catalog);
-  return href ? <a className="machine-inventory-link" href={href} onClick={(event) => event.stopPropagation()}>{machineLabel}</a> : <>{machineLabel}</>;
+  const displayLabel = machine ? `${machine.manufacturer} · ${machine.model}` : machineLabel;
+  return href ? <a className="machine-inventory-link" href={href} onClick={(event) => event.stopPropagation()} title={`Ancien libellé : ${machineLabel}`}>{displayLabel}</a> : <>{displayLabel}</>;
 }
 
 function MachineModelField({ value, onChange, catalog }: { value: string; onChange: (value: string) => void; catalog: MachineCatalogEntry[] }) {
@@ -126,7 +146,9 @@ export default function InventoryWorkspace() {
   const [uploadingInvoice, setUploadingInvoice] = useState(false);
 
   const machineBrands = useMemo(() => [...new Set(machineLinks.map((machine) => machine.manufacturer))].sort(), [machineLinks]);
-  const machineOptions = useMemo(() => machineLinks.filter((machine) => !machineBrand || machine.manufacturer === machineBrand), [machineBrand, machineLinks]);
+  const machineOptions = useMemo(() => [...machineLinks]
+    .filter((machine) => !machineBrand || machine.manufacturer === machineBrand)
+    .sort((a, b) => `${a.manufacturer} ${a.model}`.localeCompare(`${b.manufacturer} ${b.model}`, "fr-CA", { numeric: true, sensitivity: "base" })), [machineBrand, machineLinks]);
 
   const load = async (term = "", requestedSort = sortKey, requestedDirection = sortDirection) => {
     setLoading(true);
