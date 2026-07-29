@@ -38,6 +38,7 @@ const manufacturerLogos: Record<string, string> = {
   Juki: "/manufacturer-logos/juki.svg",
   "Kansai Special": "/manufacturer-logos/kansai-special.png",
   Mitsubishi: "/manufacturer-logos/mitsubishi.svg",
+  Nilfisk: "/manufacturer-logos/nilfisk.png",
   Pfaff: "/manufacturer-logos/pfaff.jpg",
   Reece: "/manufacturer-logos/reece.png",
   Rimoldi: "/manufacturer-logos/rimoldi.svg",
