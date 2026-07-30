@@ -47,6 +47,29 @@ const manufacturerLogos: Record<string, string> = {
   "Willcox & Gibbs": "/manufacturer-logos/willcox-and-gibbs.png",
 };
 
+// Fixed on 2026-07-29 from the current number of linked inventory records.
+// Do not recalculate this order at runtime: the mobile shortcuts should remain
+// familiar even when records or quantities are later corrected.
+const fixedManufacturerOrder = [
+  "Brother",
+  "Union Special",
+  "Reece",
+  "Juki",
+  "Singer",
+  "Willcox & Gibbs",
+  "Kansai Special",
+  "Clinton Industries",
+  "Eastlex",
+  "Galkin",
+  "Pfaff",
+  "AMCO / Teledyne AMCO",
+  "Rimoldi",
+  "Mitsubishi",
+  "Eastman",
+] as const;
+
+const fixedManufacturerRank = new Map<string, number>(fixedManufacturerOrder.map((manufacturer, index) => [manufacturer, index]));
+
 function inventoryLink(machine: MachineCatalogEntry) {
   return `/?machineId=${encodeURIComponent(machine.id)}`;
 }
@@ -118,7 +141,12 @@ export default function MachinesWorkspace() {
     if (machine) setSelected(machine);
   }, [catalog]);
 
-  const brands = useMemo(() => [...new Set(catalog.map((machine) => machine.manufacturer))].sort(), [catalog]);
+  const brands = useMemo(() => [...new Set(catalog.map((machine) => machine.manufacturer))].sort((left, right) => {
+    const leftRank = fixedManufacturerRank.get(left);
+    const rightRank = fixedManufacturerRank.get(right);
+    if (leftRank !== undefined || rightRank !== undefined) return (leftRank ?? Number.MAX_SAFE_INTEGER) - (rightRank ?? Number.MAX_SAFE_INTEGER);
+    return left.localeCompare(right, "fr-CA", { sensitivity: "base" });
+  }), [catalog]);
   const machines = useMemo(() => catalog.filter((machine) => {
     const query = search.trim().toLocaleLowerCase("fr-CA");
     return (stage === "Toutes" || machine.stage === stage)
@@ -235,7 +263,7 @@ export default function MachinesWorkspace() {
 
     <section className="machine-filters" aria-label="Recherche de machines">
       <div className="machine-filter-row"><label className="machine-search"><span>Rechercher une machine</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Marque, modèle, nom ou rôle" /></label><label className="machine-stage-filter"><span>Étape de production</span><select value={stage} onChange={(event) => setStage(event.target.value as MachineStage | "Toutes")}><option value="Toutes">Toutes les étapes</option>{productionStages.map((value) => <option key={value} value={value}>{value}</option>)}</select></label></div>
-      <div className="filter-section machine-brand-filter"><strong>Marque</strong><div className="filter-chips brand-filter-chips"><button className={brand === "Toutes" ? "active" : ""} onClick={() => setBrand("Toutes")}>Toutes</button>{brands.map((value) => <BrandFilterChip key={value} brand={value} active={brand === value} onSelect={() => setBrand(value)} />)}</div></div>
+      <div className="filter-section machine-brand-filter"><strong>Marque</strong><div className="brand-filter-scroller"><div className="filter-chips brand-filter-chips"><button className={brand === "Toutes" ? "active" : ""} onClick={() => setBrand("Toutes")}>Toutes</button>{brands.map((value) => <BrandFilterChip key={value} brand={value} active={brand === value} onSelect={() => setBrand(value)} />)}</div><span className="brand-scroll-cue" aria-hidden="true">→</span></div></div>
     </section>
 
     <p className="machine-results">{machines.length} famille{machines.length === 1 ? "" : "s"} affichée{machines.length === 1 ? "" : "s"}. Les nombres de pièces sont des associations de recherche, pas une confirmation que chaque pièce convient à chaque sous-modèle.</p>

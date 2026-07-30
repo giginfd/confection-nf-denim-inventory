@@ -67,3 +67,15 @@ test("applies reviewed machine associations while keeping legacy names searchabl
   assert.match(schema, /inventoryMachineAssociationAudits/);
   assert.match(workspace, /Ancien nom de machine/);
 });
+
+test("keeps the mobile machine-brand shortcuts in a fixed, scrollable order", async () => {
+  const [machines, styles] = await Promise.all([
+    readFile(new URL("../app/machines/MachinesWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(machines, /const fixedManufacturerOrder = \[\s*"Brother",\s*"Union Special",\s*"Reece",\s*"Juki",\s*"Singer"/);
+  assert.match(machines, /brand-scroll-cue/);
+  assert.match(styles, /scroll-snap-type: x proximity/);
+  assert.match(styles, /\.brand-filter-chips > button \{ flex: 0 0 86px/);
+});
